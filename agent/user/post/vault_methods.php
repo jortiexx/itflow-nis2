@@ -3,6 +3,7 @@
 defined('FROM_POST_HANDLER') || die("Direct file access is not allowed");
 
 require_once __DIR__ . '/../../../includes/vault_unlock.php';
+require_once __DIR__ . '/../../../includes/security_audit.php';
 
 if (isset($_POST['set_vault_pin'])) {
 
@@ -37,6 +38,10 @@ if (isset($_POST['set_vault_pin'])) {
     }
 
     logAction('Vault', 'PIN set', "$session_name set or updated their vault PIN", 0, $session_user_id);
+    securityAudit('vault.method.created', [
+        'user_id'  => $session_user_id,
+        'metadata' => ['method_type' => 'pin'],
+    ]);
     flash_alert('Vault PIN saved.');
     redirect();
 }
@@ -54,6 +59,10 @@ if (isset($_POST['delete_vault_method'])) {
     $deleted = vaultDeleteMethod($method_id, $session_user_id, $mysqli);
     if ($deleted) {
         logAction('Vault', 'Method removed', "$session_name removed a vault unlock method", 0, $session_user_id);
+        securityAudit('vault.method.removed', [
+            'user_id'   => $session_user_id,
+            'target_id' => $method_id,
+        ]);
         flash_alert('Vault unlock method removed.');
     } else {
         flash_alert('Method not found.', 'danger');

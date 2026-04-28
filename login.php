@@ -12,6 +12,7 @@ if (!file_exists('config.php')) {
 require_once "config.php";
 require_once "functions.php";
 require_once "includes/security_headers.php";
+require_once "includes/security_audit.php";
 require_once "plugins/totp/totp.php";
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -248,6 +249,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
 
             // Option B not possible here (we don't know user_id reliably)
             logAction("Login", "Failed", "Failed login attempt using $email");
+            securityAudit('login.password.failed', [
+                'metadata' => ['email' => $email],
+            ]);
 
             $response = "
               <div class='alert alert-danger'>
@@ -420,6 +424,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                         // Option B: set session_user_id BEFORE logAction()
                         $session_user_id = $user_id;
                         logAction("Login", "Success", "$user_name successfully logged in $extended_log", 0, $user_id);
+                        securityAudit('login.password.success', [
+                            'user_id'  => $user_id,
+                            'metadata' => ['mfa' => trim($extended_log)],
+                        ]);
 
                         $_SESSION['user_id']    = $user_id;
                         $_SESSION['csrf_token'] = randomString(32);
@@ -514,6 +522,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                             // Option B: set session_user_id BEFORE logAction()
                             $session_user_id = $user_id;
                             logAction("Login", "MFA Failed", "$user_email failed MFA", 0, $user_id);
+                            securityAudit('login.mfa.failed', [
+                                'user_id' => $user_id,
+                            ]);
 
                             if (!empty($config_smtp_host)) {
                                 $subject = "Important: $config_app_name failed 2FA login attempt for $user_name";

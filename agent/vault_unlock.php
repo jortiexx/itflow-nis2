@@ -14,6 +14,7 @@ require_once __DIR__ . '/../functions.php';
 require_once __DIR__ . '/../includes/security_headers.php';
 require_once __DIR__ . '/../includes/vault_unlock.php';
 require_once __DIR__ . '/../includes/rate_limit.php';
+require_once __DIR__ . '/../includes/security_audit.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
@@ -73,6 +74,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['vault_unlocked'] = true;
             $_SESSION['csrf_token'] = randomString(32);
             logAction('Vault', 'Unlock', "$user_name unlocked vault via PIN", 0, $user_id);
+            securityAudit('vault.unlock.success', [
+                'user_id' => $user_id,
+                'metadata' => ['method' => 'pin'],
+            ]);
             $start = $config_start_page ?? 'clients.php';
             header("Location: /agent/$start");
             exit;
@@ -80,6 +85,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Generic message — don't reveal which factor failed
         $error = 'Incorrect PIN, or the vault is temporarily locked due to repeated failed attempts.';
         logAction('Vault', 'Unlock failed', "$user_name failed vault PIN unlock", 0, $user_id);
+        securityAudit('vault.unlock.failed', [
+            'user_id' => $user_id,
+            'metadata' => ['method' => 'pin'],
+        ]);
     }
 }
 

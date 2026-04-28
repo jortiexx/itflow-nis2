@@ -279,6 +279,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a href="/admin/security_audit.php" class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'security_audit.php' ? 'active' : ''); ?>">
+                                <i class="nav-icon fas fa-shield-alt"></i>
+                                <p>Security audit log</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a href="/admin/settings_telemetry.php" class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'settings_telemetry.php' ? 'active' : ''); ?>">
                                 <i class="nav-icon fas fa-satellite-dish"></i>
                                 <p>Telemetry</p>

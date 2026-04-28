@@ -2,7 +2,84 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 4: Operational hardening
+## Unreleased — Phase 5: Tamper-evident security audit log
+
+This phase adds an append-only, hash-chained security audit log alongside the existing application logs. NIS2 Article 21(2)(b) (incident handling) and 21(2)(f) (effectiveness assessment) require evidence that security-relevant events have not been retroactively modified or deleted. The hash chain provides that evidence cryptographically.
+
+### Added
+- `includes/security_audit.php` — append-only audit log with SHA-256 hash chain. Each entry's hash covers `prev_hash || canonical_json(entry_fields)`, where the canonical form is a fixed-key-order JSON serialization. Concurrent inserts are serialized via `LOCK TABLES … WRITE` so the chain cannot fork.
+- `scripts/audit_verify.php` — CLI verifier that walks the chain and reports any inconsistency. Exits non-zero on tampering. Supports `--from` / `--to` to bound the walk.
+- `scripts/security_audit_self_test.php` — six-test offline self-test covering canonical serialization, hash chain consistency, tamper detection on a modified row, and chain breakage on a removed row. All passing.
+- `admin/security_audit.php` — admin viewer with filter on `event_type` and `user_id`, paginated. Surfaces the latest entry hash so an operator can pin it externally for forensic anchoring.
+- Sidebar entry under Settings → Security audit log.
+
+### Schema (migration `2.4.4.3 → 2.4.4.4`)
+New table `security_audit_log`:
+- `log_id BIGINT PK`
+- `event_time DATETIME(6)` — microsecond resolution
+- `event_type VARCHAR(60)` — symbolic name (e.g. `login.password.success`, `vault.unlock.failed`)
+- `user_id INT NULL` (no FK on purpose — audit retention may outlive user deletion)
+- `target_type VARCHAR(50) NULL` / `target_id INT NULL` — what the event acted on
+- `source_ip VARCHAR(45) NULL` / `user_agent VARCHAR(500) NULL`
+- `metadata TEXT NULL` — JSON blob for event-specific details
+- `prev_hash VARBINARY(32)` — hash of the previous entry (or zeros for the first)
+- `entry_hash VARBINARY(32)` — `SHA256(prev_hash || canonical_json(fields))`
+
+### Events instrumented
+Currently emitted:
+
+| Event | Where |
+|-------|-------|
+| `login.password.failed` | `login.php` (no user identified) |
+| `login.password.success` | `login.php` (after password + optional MFA) |
+| `login.mfa.failed` | `login.php` (TOTP verification failed) |
+| `sso.login.failed` | `agent/login_entra_callback.php` (any failure mode) |
+| `sso.login.success` | `agent/login_entra_callback.php` (post-validation, post-mapping) |
+| `vault.unlock.success` | `agent/vault_unlock.php` (PIN accepted) |
+| `vault.unlock.failed` | `agent/vault_unlock.php` (wrong PIN or method locked) |
+| `vault.method.created` | `agent/user/post/vault_methods.php` (PIN set) |
+| `vault.method.removed` | `agent/user/post/vault_methods.php` (method deleted) |
+
+Credential read events are **not** audited by default — they would be too noisy for operational logs and the master key is already gated by session unlock. A future phase may add an opt-in mode for high-security deployments.
+
+### Threat model
+
+| Adversary | Outcome |
+|-----------|---------|
+| Application bug / accidental DBA edit on one row | Detected: row hash + downstream prev_hash both fail. |
+| SQL injection that deletes a single row | Detected: chain breaks at the next row. |
+| SQL injection that deletes the entire table | Trivially detectable — verifier walks zero entries. Pin the latest hash externally to detect this. |
+| Full DB write access by a sophisticated attacker | **Not detected** — they can rebuild the chain end-to-end. The chain is only useful in combination with an external pinning of the latest hash (SIEM, paper, cold storage). |
+| Read-only DB compromise | Hash chain unaffected; this phase does not alter confidentiality posture of the audit log itself. Future hardening could encrypt `metadata` at rest. |
+
+### Operator action required
+- Run the database migration: **Admin → Update → Update Database** or `php scripts/update_cli.php --update_db`.
+- Verify the implementation:
+  ```
+  php scripts/security_audit_self_test.php
+  ```
+- After accumulating some events, walk the live chain:
+  ```
+  php scripts/audit_verify.php
+  ```
+- (Recommended) Set up a daily cron that runs the verifier and alerts on non-zero exit.
+- (Recommended) Periodically pin the latest entry hash externally — the admin page surfaces it. Even a paper note in a safe is valuable: it creates a verifiable anchor for forensic timelines.
+
+### NIS2 mapping (cumulative through Phase 5)
+
+| Domain | Status |
+|--------|--------|
+| Algorithm choice (Art. 21(2)(h)) | ✅ AES-256-GCM, Argon2id |
+| Crypto policy | ✅ |
+| Vulnerability handling (Art. 21(2)(e)) | ✅ CI scans + SBOM |
+| SSO (Art. 21(2)(i)) | ✅ Entra ID OIDC |
+| Vault unlock for SSO users | ✅ PIN |
+| Transport security | ✅ HSTS + headers + rate limits |
+| Incident handling (Art. 21(2)(b)) | ✅ Tamper-evident audit log |
+| Effectiveness assessment (Art. 21(2)(f)) | ✅ Verifier exit code drives alerting |
+| MFA (Art. 21(2)(j)) | ⚠️ TOTP; WebAuthn deferred |
+
+## v0.5.0-nis2-hardening — Phase 4: Operational hardening
 
 This phase adds standard security response headers to every entry point, IP-based rate limiting on credential-style endpoints, and session-id rotation at the vault unlock privilege boundary. Phishing-resistant MFA via WebAuthn is reserved for a future phase to keep this release shippable.
 

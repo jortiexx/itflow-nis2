@@ -17,6 +17,7 @@ require_once __DIR__ . '/../includes/security_headers.php';
 require_once __DIR__ . '/../includes/entra_sso.php';
 require_once __DIR__ . '/../includes/vault_unlock.php';
 require_once __DIR__ . '/../includes/rate_limit.php';
+require_once __DIR__ . '/../includes/security_audit.php';
 require_once __DIR__ . '/../includes/load_global_settings.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -40,6 +41,9 @@ function ssoFail(string $reason, string $detail = ''): void
     global $session_ip, $session_user_agent;
     unset($_SESSION['agent_sso_pending']);
     logAction('SSO Login', 'Failed', "Agent SSO failed: $reason" . ($detail ? " — $detail" : ''));
+    securityAudit('sso.login.failed', [
+        'metadata' => ['reason' => $reason, 'detail' => $detail],
+    ]);
     $_SESSION['login_message'] = "Sign-in failed: $reason";
     header('Location: ../login.php');
     exit;
@@ -222,6 +226,14 @@ mysqli_query($mysqli, "
 
 $session_user_id = $user_id;
 logAction('Login', 'Success', "$user_name signed in via Entra SSO", 0, $user_id);
+securityAudit('sso.login.success', [
+    'user_id'  => $user_id,
+    'metadata' => [
+        'oid'   => $claims['oid'] ?? null,
+        'tid'   => $claims['tid'] ?? null,
+        'email' => $entra_email,
+    ],
+]);
 
 // If the user has a vault PIN enrolled, force PIN entry before exposing
 // any pages that may attempt to decrypt credentials.

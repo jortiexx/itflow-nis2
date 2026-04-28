@@ -1959,6 +1959,32 @@ CREATE TABLE `remember_tokens` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `security_audit_log` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `security_audit_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `security_audit_log` (
+  `log_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `event_time` datetime(6) NOT NULL,
+  `event_type` varchar(60) NOT NULL,
+  `user_id` int(11) DEFAULT NULL,
+  `target_type` varchar(50) DEFAULT NULL,
+  `target_id` int(11) DEFAULT NULL,
+  `source_ip` varchar(45) DEFAULT NULL,
+  `user_agent` varchar(500) DEFAULT NULL,
+  `metadata` text DEFAULT NULL,
+  `prev_hash` varbinary(32) NOT NULL,
+  `entry_hash` varbinary(32) NOT NULL,
+  PRIMARY KEY (`log_id`),
+  KEY `idx_event_time` (`event_time`),
+  KEY `idx_event_type` (`event_type`),
+  KEY `idx_user_event` (`user_id`,`event_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `user_vault_unlock_methods` (NIS2 fork)
 --
 

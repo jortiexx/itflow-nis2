@@ -4463,6 +4463,30 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.3'");
     }
 
+    // 2.4.4.3 -> 2.4.4.4: tamper-evident security audit log
+    if (CURRENT_DATABASE_VERSION == '2.4.4.3') {
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `security_audit_log` (
+                `log_id` BIGINT NOT NULL AUTO_INCREMENT,
+                `event_time` DATETIME(6) NOT NULL,
+                `event_type` VARCHAR(60) NOT NULL,
+                `user_id` INT NULL DEFAULT NULL,
+                `target_type` VARCHAR(50) NULL DEFAULT NULL,
+                `target_id` INT NULL DEFAULT NULL,
+                `source_ip` VARCHAR(45) NULL DEFAULT NULL,
+                `user_agent` VARCHAR(500) NULL DEFAULT NULL,
+                `metadata` TEXT NULL DEFAULT NULL,
+                `prev_hash` VARBINARY(32) NOT NULL,
+                `entry_hash` VARBINARY(32) NOT NULL,
+                PRIMARY KEY (`log_id`),
+                KEY `idx_event_time` (`event_time`),
+                KEY `idx_event_type` (`event_type`),
+                KEY `idx_user_event` (`user_id`, `event_type`)
+            ) ENGINE=InnoDB
+        ");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.4'");
+    }
+
 } else {
     // Up-to-date
 }
