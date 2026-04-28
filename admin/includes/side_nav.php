@@ -273,6 +273,12 @@
                             </li>
                         <?php } ?>
                         <li class="nav-item">
+                            <a href="/admin/agent_sso_settings.php" class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'agent_sso_settings.php' ? 'active' : ''); ?>">
+                                <i class="nav-icon fas fa-id-badge"></i>
+                                <p>Agent SSO (Entra)</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a href="/admin/settings_telemetry.php" class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'settings_telemetry.php' ? 'active' : ''); ?>">
                                 <i class="nav-icon fas fa-satellite-dish"></i>
                                 <p>Telemetry</p>

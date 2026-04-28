@@ -94,6 +94,9 @@ $config_login_key_secret   = $row['config_login_key_secret'];
 
 $azure_client_id = $row['config_azure_client_id'] ?? null;
 
+// Agent SSO (Microsoft Entra ID) — shows the "Sign in with Microsoft" button on login.
+$config_agent_sso_enabled = !empty($row['config_agent_sso_enabled']);
+
 $response         = null;
 $token_field      = null;
 $show_role_choice = false;
@@ -648,6 +651,13 @@ $show_login_form = (!$show_role_choice && !$show_mfa_form);
                 <p class="login-box-msg px-0"><?php echo nl2br($config_login_message); ?></p>
             <?php } ?>
 
+            <?php if (!empty($_SESSION['login_message'])): ?>
+                <div class="alert alert-warning small">
+                    <?= nullable_htmlentities($_SESSION['login_message']) ?>
+                </div>
+                <?php unset($_SESSION['login_message']); ?>
+            <?php endif; ?>
+
             <?php if (isset($response)) { ?>
                 <p><?php echo $response; ?></p>
             <?php } ?>
@@ -680,6 +690,13 @@ $show_login_form = (!$show_role_choice && !$show_mfa_form);
                     </div>
 
                     <button type="submit" class="btn btn-primary btn-block mb-3" name="login">Sign In</button>
+
+                    <?php if ($config_agent_sso_enabled): ?>
+                        <hr>
+                        <a href="/agent/login_entra.php" class="btn btn-outline-dark btn-block mb-3">
+                            <i class="fab fa-microsoft mr-2"></i>Sign in with Microsoft
+                        </a>
+                    <?php endif; ?>
                 <?php endif; ?>
 
                 <?php if ($show_role_choice): ?>

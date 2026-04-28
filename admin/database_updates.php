@@ -4416,6 +4416,26 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.1'");
     }
 
+    // 2.4.4.1 -> 2.4.4.2: Agent SSO (Microsoft Entra ID OIDC) settings + per-user fields.
+    // Note: user_auth_method already exists from an earlier upstream migration; we reuse it.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.1') {
+        mysqli_query($mysqli, "ALTER TABLE `users`
+            ADD COLUMN `user_entra_oid` VARCHAR(64) NULL DEFAULT NULL
+            AFTER `user_specific_encryption_ciphertext_v2`,
+            ADD UNIQUE INDEX `uniq_user_entra_oid` (`user_entra_oid`)");
+
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_agent_sso_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN `config_agent_sso_tenant_id` VARCHAR(64) NULL DEFAULT NULL,
+            ADD COLUMN `config_agent_sso_client_id` VARCHAR(64) NULL DEFAULT NULL,
+            ADD COLUMN `config_agent_sso_client_secret` VARCHAR(512) NULL DEFAULT NULL,
+            ADD COLUMN `config_agent_sso_redirect_uri` VARCHAR(255) NULL DEFAULT NULL,
+            ADD COLUMN `config_agent_sso_jit_provisioning` TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN `config_agent_sso_default_role_id` INT(11) NOT NULL DEFAULT 0");
+
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.2'");
+    }
+
 } else {
     // Up-to-date
 }

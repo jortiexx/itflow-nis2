@@ -2,7 +2,77 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 1: Crypto modernisation
+## Unreleased — Phase 2: Microsoft Entra ID SSO for agents
+
+This phase adds OIDC sign-in via Microsoft Entra ID (Azure AD) for agent users. The flow is implemented from scratch with security properties that the upstream client-portal Azure flow does not provide: PKCE, nonce, RS256 ID-token signature verification against the tenant JWKS, and tenant-restricted issuer validation.
+
+Vault unlock for SSO-authenticated agents is **out of scope for this phase**: SSO agents authenticate but their credential vault is not unlocked (no master key in session). Phase 3 will add WebAuthn PRF (primary) and a vault PIN (fallback) to unlock the vault after SSO. Until then, SSO agents can use ITFlow features that do not require credential decryption (tickets, clients, assets metadata, invoicing) but cannot view or write encrypted credentials.
+
+### Added
+- `includes/entra_sso.php` — hand-rolled OIDC helpers:
+  - PKCE pair generation (S256 method per RFC 7636)
+  - Authorization-URL construction with state, nonce, PKCE challenge, `prompt=select_account`
+  - Token exchange via curl with TLS verification on
+  - JWKS fetch with 24-hour disk cache and automatic refetch on `kid` miss (handles key rotation)
+  - JWK (RSA) → PEM conversion (DER-encoded SubjectPublicKeyInfo)
+  - ID-token validation: RS256 signature against tenant JWKS, plus claim checks for `iss`, `aud`, `tid`, `exp`, `nbf`, `iat`, `nonce`, and presence of `oid`. ±2 minutes clock skew tolerance.
+- `agent/login_entra.php` — initiation endpoint. Generates state/nonce/PKCE, stashes them in the session, redirects to Entra.
+- `agent/login_entra_callback.php` — callback endpoint. Verifies state, exchanges code, validates ID token, maps to a local agent account by `oid` (immutable) or email, optionally JIT-provisions, regenerates the session ID, sets login session, logs audit events.
+- `admin/agent_sso_settings.php` + `admin/post/agent_sso_settings.php` — admin UI to configure tenant ID, client ID, client secret, redirect URI, JIT provisioning toggle, default JIT role.
+- Sidebar entry under Settings → Agent SSO (Entra).
+- "Sign in with Microsoft" button on the main login page when SSO is enabled.
+- `scripts/entra_sso_self_test.php` — 11-test self-test covering PKCE generation, base64url round-trip, RSA JWK → PEM conversion against a fresh keypair, signature verification + rejection of mismatched keys, and end-to-end JWT signing + verification.
+
+### Changed
+- `login.php` — reads `config_agent_sso_enabled` and renders the SSO button when enabled. Surfaces SSO callback errors via `$_SESSION['login_message']`.
+- Database version: `2.4.4.1 → 2.4.4.2`.
+
+### Schema
+- `users.user_entra_oid VARCHAR(64) NULL` (unique). Immutable Entra user identifier; preferred lookup key.
+- `settings.config_agent_sso_enabled TINYINT(1) DEFAULT 0`
+- `settings.config_agent_sso_tenant_id VARCHAR(64)`
+- `settings.config_agent_sso_client_id VARCHAR(64)`
+- `settings.config_agent_sso_client_secret VARCHAR(512)`
+- `settings.config_agent_sso_redirect_uri VARCHAR(255)`
+- `settings.config_agent_sso_jit_provisioning TINYINT(1) DEFAULT 0`
+- `settings.config_agent_sso_default_role_id INT(11) DEFAULT 0`
+
+### Setup steps for an operator
+1. **Register an application in Entra ID** (App registrations → New registration). Single tenant. Redirect URI (Web platform): `https://{your-itflow-host}/agent/login_entra_callback.php`.
+2. **Create a client secret** under Certificates & secrets. Copy the secret value (shown once).
+3. In ITFlow, go to **Settings → Agent SSO (Entra)**: enter tenant ID, client ID, secret, set status to Enabled. Save.
+4. (Recommended) In Entra → **Enterprise applications → your app → Properties**, set "Assignment required" = Yes. Then assign only the agents/groups you want to allow.
+5. (Optional) Map an existing agent account to an Entra user: log in once with that agent's email; the system binds the `oid` automatically. Subsequent logins match by `oid` directly.
+6. (Optional) Enable JIT provisioning to let new Entra users be created as ITFlow agents on first sign-in. Choose a default role with the minimum privileges that fit your use case.
+
+### Security properties of this flow (vs. the existing client-portal flow)
+| Property | Client portal (`client/login_microsoft.php`) | Agent flow (this phase) |
+|----------|----------------------------------------------|-------------------------|
+| State CSRF protection | `session_id()` | `random_bytes(16)` per request |
+| PKCE | No | Yes (S256) |
+| Nonce | No | Yes (validated against ID token) |
+| ID token signature verification | No (relies on Graph API) | Yes (RS256 against tenant JWKS) |
+| Tenant restriction | Uses `/organizations/` (any tenant) | Single configured tenant |
+| Issuer / aud / tid validation | No | Yes |
+| Identity binding | Email only | Immutable `oid`, with email fallback (binds `oid` on first match) |
+| Clock skew tolerance | n/a | ±120 seconds |
+| Session fixation defense | No | `session_regenerate_id(true)` post-auth |
+
+### Operator action required
+- Run the database migration: **Admin → Update → Update Database** or `php scripts/update_cli.php --update_db`.
+- Run the self-tests before deploying:
+  ```
+  php scripts/crypto_self_test.php
+  php scripts/entra_sso_self_test.php
+  ```
+- Configure the Entra tenant and ITFlow as above.
+
+### Known limitations
+- SSO agents cannot decrypt credentials until Phase 3 ships (WebAuthn PRF / vault PIN). Show empty placeholders for credential reads.
+- Group-based role mapping is intentionally not implemented in this phase. Use Entra-side enterprise-application user assignment for access control. Group-based role mapping can be added later if needed.
+- The client secret is stored in the `settings` table in plaintext. Treat the database as a secret-equivalent asset. A future hardening step may move the secret to an environment variable or external secret store.
+
+## v0.2.0-nis2-crypto — Phase 1: Crypto modernisation
 
 This phase introduces the v2 cryptographic stack (AES-256-GCM + Argon2id). Both v1 and v2 ciphertexts coexist for backward compatibility; v1 data is migrated lazily on read/login and on credential update.
 
