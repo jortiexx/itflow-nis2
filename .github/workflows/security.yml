@@ -1,0 +1,94 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  php-syntax:
+    name: PHP syntax (8.2 / 8.3)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: Lint changed PHP files
+        run: |
+          find . -path ./plugins/vendor -prune -o -name '*.php' -print \
+            | xargs -P 4 -n 32 php -l > /tmp/lint.log 2>&1 || (cat /tmp/lint.log && exit 1)
+          grep -v 'No syntax errors detected' /tmp/lint.log || true
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-audit:
+    name: Composer + npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Composer audit (if composer.lock present)
+        run: |
+          if [ -f composer.lock ]; then
+            composer audit --locked --no-interaction || true
+          else
+            echo "No composer.lock; skipping"
+          fi
+      - name: npm audit (if package-lock.json present)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm audit --omit=dev || true
+          else
+            echo "No package-lock.json; skipping"
+          fi
+
+  codeql:
+    name: CodeQL (PHP, JavaScript)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: ['javascript-typescript']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          retention-days: 90

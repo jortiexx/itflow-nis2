@@ -82,9 +82,10 @@ if (count($options) === 0) {
 // If "update" or "force_update" is requested
 if (isset($options['update']) || isset($options['force_update'])) {
     if (isset($options['force_update'])) {
-        // Perform a hard reset
+        // Perform a hard reset against the configured branch
+        $branch = escapeshellarg($repo_branch);
         exec("git fetch --all 2>&1", $output, $return_var);
-        exec("git reset --hard origin/master 2>&1", $output2, $return_var2);
+        exec("git reset --hard origin/$branch 2>&1", $output2, $return_var2);
         echo implode("\n", $output) . "\n" . implode("\n", $output2) . "\n";
     } else {
         // Perform a standard update (git pull)

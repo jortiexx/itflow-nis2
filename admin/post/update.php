@@ -8,9 +8,11 @@ if (isset($_GET['update'])) {
 
     //git fetch downloads the latest from remote without trying to merge or rebase anything. Then the git reset resets the master branch to what you just fetched. The --hard option changes all the files in your working tree to match the files in origin/master
 
+    $branch = escapeshellarg($repo_branch);
+
     if (isset($_GET['force_update']) == 1) {
         exec("git fetch --all");
-        exec("git reset --hard origin/master");
+        exec("git reset --hard origin/$branch");
     } else {
         exec("git pull");
     }
@@ -18,7 +20,7 @@ if (isset($_GET['update'])) {
 
 
     // Send Telemetry if enabled during update
-    if ($config_telemetry > 0 OR $config_telemetry = 2) {
+    if ($config_telemetry > 0) {
 
         $sql = mysqli_query($mysqli,"SELECT * FROM companies WHERE company_id = 1");
         $row = mysqli_fetch_assoc($sql);

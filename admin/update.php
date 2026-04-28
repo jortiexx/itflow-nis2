@@ -11,6 +11,8 @@ $result = $updates->result;
 
 $git_log = shell_exec("git log $repo_branch..origin/$repo_branch --pretty=format:'<tr><td>%h</td><td>%ar</td><td>%s</td></tr>'");
 
+$current_remote = trim(shell_exec("git remote get-url origin 2>&1"));
+
 ?>
 
     <div class="card card-dark">
@@ -18,6 +20,11 @@ $git_log = shell_exec("git log $repo_branch..origin/$repo_branch --pretty=format
             <h3 class="card-title"><i class="fas fa-fw fa-download mr-2"></i>Update</h3>
         </div>
         <div class="card-body" style="text-align: center;">
+
+            <div class="alert alert-secondary text-left small mb-3">
+                <strong>Source:</strong> <code><?= htmlentities($current_remote) ?></code>
+                <strong>Branch:</strong> <code><?= htmlentities($repo_branch) ?></code>
+            </div>
 
             <!-- Check if git fetch result was successful (0), if not show a warning -->
             <?php if ($result !== 0) { ?>
