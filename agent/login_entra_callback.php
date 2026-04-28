@@ -13,8 +13,10 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../includes/security_headers.php';
 require_once __DIR__ . '/../includes/entra_sso.php';
 require_once __DIR__ . '/../includes/vault_unlock.php';
+require_once __DIR__ . '/../includes/rate_limit.php';
 require_once __DIR__ . '/../includes/load_global_settings.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -29,6 +31,9 @@ require_once __DIR__ . '/../includes/inc_set_timezone.php';
 
 $session_ip         = sanitizeInput(getIP());
 $session_user_agent = sanitizeInput($_SERVER['HTTP_USER_AGENT'] ?? '');
+
+// Per-IP rate limit: 20 failed SSO attempts in 10 minutes blocks further tries.
+rateLimitCheck('SSO Login', 'Failed', 20, 600);
 
 function ssoFail(string $reason, string $detail = ''): void
 {

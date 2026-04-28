@@ -11,6 +11,7 @@ if (!file_exists('config.php')) {
 
 require_once "config.php";
 require_once "functions.php";
+require_once "includes/security_headers.php";
 require_once "plugins/totp/totp.php";
 
 if (session_status() === PHP_SESSION_NONE) {

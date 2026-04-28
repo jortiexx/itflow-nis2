@@ -10,6 +10,7 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../includes/security_headers.php';
 require_once __DIR__ . '/../includes/entra_sso.php';
 
 if (session_status() === PHP_SESSION_NONE) {

@@ -2,7 +2,58 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 3: Vault unlock with PIN
+## Unreleased — Phase 4: Operational hardening
+
+This phase adds standard security response headers to every entry point, IP-based rate limiting on credential-style endpoints, and session-id rotation at the vault unlock privilege boundary. Phishing-resistant MFA via WebAuthn is reserved for a future phase to keep this release shippable.
+
+### Added
+- `includes/security_headers.php` — sets HSTS (when HTTPS is enforced), X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy, and a Permissions-Policy that denies browser features ITFlow does not use. Verified to apply on `/login.php` against a live Apache instance.
+- `includes/rate_limit.php` — `rateLimitCheck($log_type, $log_action, $max, $window_s)` consults the existing `logs` table, emits HTTP 429 + Retry-After when the threshold is exceeded, and writes a "Blocked" log entry. Reuses log entries the application already produces, so no separate buckets/cache.
+
+### Changed
+- `includes/session_init.php` — pulls in `security_headers.php`. This means every page that goes through `check_login.php` (which is virtually all authenticated pages) gets the headers automatically.
+- `login.php`, `agent/login_entra.php`, `agent/login_entra_callback.php`, `agent/vault_unlock.php` — explicit `require_once` of `security_headers.php` since they do not load `check_login.php`.
+- `agent/login_entra_callback.php` — calls `rateLimitCheck('SSO Login', 'Failed', 20, 600)` early in the handler. Twenty failed SSO attempts from the same IP in 10 minutes triggers HTTP 429.
+- `agent/vault_unlock.php` — calls `rateLimitCheck('Vault', 'Unlock failed', 20, 600)` on POST. Twenty failed PIN attempts from the same IP in 10 minutes triggers HTTP 429. Per-method lockout from Phase 3 still applies (5 strikes / 15 min per user).
+- `agent/vault_unlock.php` — successful PIN unlock now calls `session_regenerate_id(true)` and rotates the CSRF token, defending against session-fixation across the privilege transition from "logged in, vault locked" to "vault unlocked".
+
+### Headers set on every page
+
+| Header | Value |
+|--------|-------|
+| Strict-Transport-Security | `max-age=31536000; includeSubDomains; preload` (HTTPS only) |
+| X-Frame-Options | `DENY` |
+| X-Content-Type-Options | `nosniff` |
+| Referrer-Policy | `strict-origin-when-cross-origin` |
+| Cross-Origin-Opener-Policy | `same-origin` |
+| Cross-Origin-Resource-Policy | `same-origin` |
+| Permissions-Policy | denies camera/microphone/usb/geolocation/etc; allows fullscreen+sync-xhr+webauthn-get only on self |
+
+### Not changed
+- Content-Security-Policy is intentionally left as-is. ITFlow uses inline scripts and event handlers throughout; a strict CSP would break the app. The login page retains its existing minimal CSP. Broader CSP rollout requires a refactor that is out of scope for this phase.
+- `__Host-` cookie prefix is not applied. Migrating session cookies to a `__Host-` prefix would invalidate every existing session; out of scope.
+
+### Operator action required
+- No database migration in this phase.
+- After deployment, verify the headers with curl (or a browser dev tools network panel):
+  ```
+  curl -sI https://your-itflow-host/login.php | grep -E '^(Strict-Transport|X-Frame|X-Content|Referrer|Cross-Origin|Permissions)'
+  ```
+  All five non-HSTS headers should be present on every page; HSTS only on HTTPS.
+
+### NIS2 mapping (cumulative through Phase 4)
+
+| Domain | Status |
+|--------|--------|
+| Algorithm choice (Art. 21(2)(h)) | ✅ AES-256-GCM, Argon2id |
+| Crypto policy | ✅ `docs/crypto-policy.md` |
+| Vulnerability handling (Art. 21(2)(e)) | ✅ CI security scans + SBOM |
+| Toegangscontrole / SSO (Art. 21(2)(i)) | ✅ Entra ID OIDC for agents |
+| Vault unlock for SSO users | ✅ PIN |
+| Transport security (Art. 21(2)(d)) | ✅ HSTS, security headers, rate limits |
+| MFA (Art. 21(2)(j)) | ⚠️ TOTP for password users; WebAuthn deferred |
+
+## v0.4.0-nis2-vault — Phase 3: Vault unlock with PIN
 
 This phase adds a vault PIN as an unlock method, letting SSO-authenticated agents decrypt stored credentials without their account password. WebAuthn PRF is reserved as a future unlock method type — the schema is forward-compatible and a later phase can add it without further migrations.
 

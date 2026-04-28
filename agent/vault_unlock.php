@@ -11,7 +11,9 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
+require_once __DIR__ . '/../includes/security_headers.php';
 require_once __DIR__ . '/../includes/vault_unlock.php';
+require_once __DIR__ . '/../includes/rate_limit.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
@@ -55,14 +57,21 @@ $error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
+    // Per-IP rate limit: 20 failed PIN attempts in 10 minutes blocks further tries.
+    $session_ip = mysqli_real_escape_string($mysqli, sanitizeInput(getIP()));
+    rateLimitCheck('Vault', 'Unlock failed', 20, 600);
+
     if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
         $error = 'Session expired — please try again.';
     } else {
         $pin = (string)($_POST['pin'] ?? '');
         $master = vaultTryUnlockWithPin($user_id, $pin, $mysqli);
         if ($master !== null) {
+            // Privilege escalation point — rotate the session id.
+            session_regenerate_id(true);
             generateUserSessionKey($master);
             $_SESSION['vault_unlocked'] = true;
+            $_SESSION['csrf_token'] = randomString(32);
             logAction('Vault', 'Unlock', "$user_name unlocked vault via PIN", 0, $user_id);
             $start = $config_start_page ?? 'clients.php';
             header("Location: /agent/$start");
