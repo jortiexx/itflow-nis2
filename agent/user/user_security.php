@@ -1,9 +1,13 @@
 <?php
 require_once "includes/inc_all_user.php";
+require_once "../../includes/vault_unlock.php";
 
 // User remember me tokens
 $sql_remember_tokens = mysqli_query($mysqli, "SELECT * FROM remember_tokens WHERE remember_token_user_id = $session_user_id");
 $remember_token_count = mysqli_num_rows($sql_remember_tokens);
+
+$vault_methods = vaultListMethods($session_user_id, $mysqli);
+$vault_master_key_present = (vaultMasterKeyFromSession() !== null);
 
 ?>
 
@@ -44,6 +48,90 @@ $remember_token_count = mysqli_num_rows($sql_remember_tokens);
                 <a href="post.php?disable_mfa&csrf_token=<?php echo $_SESSION['csrf_token'] ?>" class="btn btn-danger"><i class="fas fa-unlock mr-2"></i>Disable MFA</a>
             <?php } ?>
         </div>
+
+    </div>
+</div>
+
+<div class="card card-dark">
+    <div class="card-header">
+        <h3 class="card-title"><i class="fas fa-fw fa-key mr-2"></i>Vault unlock methods</h3>
+    </div>
+    <div class="card-body">
+        <p class="small text-muted">
+            Vault unlock methods let you decrypt stored credentials when you sign in via SSO instead of with a password.
+            Use a vault PIN distinct from any account password.
+        </p>
+
+        <?php if (empty($vault_methods)): ?>
+            <p class="text-muted small">No unlock methods configured.</p>
+        <?php else: ?>
+            <table class="table table-sm">
+                <thead><tr><th>Type</th><th>Label</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                <?php foreach ($vault_methods as $m): ?>
+                    <tr>
+                        <td><?= htmlentities($m['method_type']) ?></td>
+                        <td><?= nullable_htmlentities($m['label']) ?></td>
+                        <td><?= nullable_htmlentities($m['created_at']) ?></td>
+                        <td><?= nullable_htmlentities($m['last_used_at'] ?? '-') ?></td>
+                        <td>
+                            <?php if (!empty($m['locked_until']) && strtotime($m['locked_until']) > time()): ?>
+                                <span class="badge badge-warning">Locked until <?= htmlentities($m['locked_until']) ?></span>
+                            <?php elseif (intval($m['failed_attempts']) > 0): ?>
+                                <span class="badge badge-secondary"><?= intval($m['failed_attempts']) ?> failed</span>
+                            <?php else: ?>
+                                <span class="badge badge-success">OK</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <form action="post.php" method="post" class="d-inline" onsubmit="return confirm('Remove this unlock method?');">
+                                <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+                                <input type="hidden" name="vault_method_id" value="<?= intval($m['method_id']) ?>">
+                                <button type="submit" name="delete_vault_method" class="btn btn-sm btn-outline-danger">
+                                    <i class="fa fa-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+
+        <hr>
+        <h5>Set or update vault PIN</h5>
+
+        <?php if (!$vault_master_key_present): ?>
+            <div class="alert alert-warning small">
+                Your vault is currently locked. Sign in with your account password (not SSO) to set or update a vault PIN.
+            </div>
+        <?php else: ?>
+            <form action="post.php" method="post" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+
+                <div class="form-group">
+                    <label>New PIN <small class="text-muted">(minimum <?= VAULT_PIN_MIN_LENGTH ?> characters)</small></label>
+                    <input type="password" class="form-control" name="vault_pin" autocomplete="new-password"
+                           minlength="<?= VAULT_PIN_MIN_LENGTH ?>" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Confirm new PIN</label>
+                    <input type="password" class="form-control" name="vault_pin_confirm" autocomplete="new-password"
+                           minlength="<?= VAULT_PIN_MIN_LENGTH ?>" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Label <small class="text-muted">(optional, for your reference)</small></label>
+                    <input type="text" class="form-control" name="vault_pin_label" maxlength="100"
+                           placeholder="e.g. work laptop">
+                </div>
+
+                <button type="submit" name="set_vault_pin" class="btn btn-primary">
+                    <i class="fa fa-check mr-2"></i>Save PIN
+                </button>
+            </form>
+        <?php endif; ?>
 
     </div>
 </div>

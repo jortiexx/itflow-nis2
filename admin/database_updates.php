@@ -4436,6 +4436,33 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.2'");
     }
 
+    // 2.4.4.2 -> 2.4.4.3: vault unlock methods (PIN now; WebAuthn-PRF columns reserved)
+    if (CURRENT_DATABASE_VERSION == '2.4.4.2') {
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `user_vault_unlock_methods` (
+                `method_id` INT(11) NOT NULL AUTO_INCREMENT,
+                `user_id` INT(11) NOT NULL,
+                `method_type` ENUM('pin','webauthn_prf') NOT NULL DEFAULT 'pin',
+                `label` VARCHAR(100) NULL DEFAULT NULL,
+                `salt` VARCHAR(64) NOT NULL,
+                `wrapped_master_key` VARCHAR(512) NOT NULL,
+                `credential_id` VARCHAR(512) NULL DEFAULT NULL,
+                `public_key` BLOB NULL DEFAULT NULL,
+                `sign_count` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `prf_salt` VARCHAR(64) NULL DEFAULT NULL,
+                `failed_attempts` INT(11) NOT NULL DEFAULT 0,
+                `locked_until` DATETIME NULL DEFAULT NULL,
+                `created_at` DATETIME NOT NULL,
+                `last_used_at` DATETIME NULL DEFAULT NULL,
+                PRIMARY KEY (`method_id`),
+                KEY `idx_user_type` (`user_id`, `method_type`),
+                CONSTRAINT `fk_user_vault_unlock_methods_user`
+                    FOREIGN KEY (`user_id`) REFERENCES `users`(`user_id`) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+        ");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.3'");
+    }
+
 } else {
     // Up-to-date
 }

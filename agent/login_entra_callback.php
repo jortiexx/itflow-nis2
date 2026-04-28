@@ -14,6 +14,7 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
 require_once __DIR__ . '/../includes/entra_sso.php';
+require_once __DIR__ . '/../includes/vault_unlock.php';
 require_once __DIR__ . '/../includes/load_global_settings.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -217,7 +218,16 @@ mysqli_query($mysqli, "
 $session_user_id = $user_id;
 logAction('Login', 'Success', "$user_name signed in via Entra SSO", 0, $user_id);
 
-// Redirect to start page
+// If the user has a vault PIN enrolled, force PIN entry before exposing
+// any pages that may attempt to decrypt credentials.
+if (vaultUserHasMethod($user_id, 'pin', $mysqli)) {
+    header('Location: /agent/vault_unlock.php');
+    exit;
+}
+
+// No vault unlock method enrolled — the user gets a working session but
+// the credential vault stays locked until they set up a PIN via the
+// password-login flow.
 $start_page = $config_start_page ?? 'clients.php';
-header("Location: $start_page");
+header("Location: /agent/$start_page");
 exit;

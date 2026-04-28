@@ -1959,6 +1959,33 @@ CREATE TABLE `remember_tokens` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `user_vault_unlock_methods` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `user_vault_unlock_methods`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_vault_unlock_methods` (
+  `method_id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `method_type` enum('pin','webauthn_prf') NOT NULL DEFAULT 'pin',
+  `label` varchar(100) DEFAULT NULL,
+  `salt` varchar(64) NOT NULL,
+  `wrapped_master_key` varchar(512) NOT NULL,
+  `credential_id` varchar(512) DEFAULT NULL,
+  `public_key` blob DEFAULT NULL,
+  `sign_count` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `prf_salt` varchar(64) DEFAULT NULL,
+  `failed_attempts` int(11) NOT NULL DEFAULT 0,
+  `locked_until` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `last_used_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`method_id`),
+  KEY `idx_user_type` (`user_id`,`method_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `revenues`
 --
 

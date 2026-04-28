@@ -1,0 +1,214 @@
+<?php
+/*
+ * Vault unlock helpers.
+ *
+ * Vault unlock methods give an agent a way to obtain the master key
+ * without their account password. The current shipped method is "pin"
+ * (Argon2id-derived KEK + AES-256-GCM wrap). Schema is forward-compatible
+ * with a future "webauthn_prf" method.
+ *
+ * Lifecycle:
+ *  - PIN setup requires the master key in memory. The expected source is
+ *    a freshly password-authenticated session. SSO-only / JIT users who
+ *    never had a password cannot bootstrap a PIN; they need an admin to
+ *    enrol them out-of-band (not implemented in this phase).
+ *  - PIN unlock decrypts the wrapped master key and feeds it to the
+ *    existing generateUserSessionKey() so the rest of ITFlow's credential
+ *    decrypt code keeps working.
+ *  - Failed attempts are throttled per method: 5 strikes locks the method
+ *    for 15 minutes. The legitimate user can wait or use another method.
+ */
+
+const VAULT_PIN_MIN_LENGTH    = 8;
+const VAULT_LOCKOUT_THRESHOLD = 5;
+const VAULT_LOCKOUT_MINUTES   = 15;
+
+function vaultListMethods(int $user_id, mysqli $mysqli): array
+{
+    $user_id = intval($user_id);
+    $rs = mysqli_query(
+        $mysqli,
+        "SELECT method_id, method_type, label, failed_attempts, locked_until,
+                created_at, last_used_at
+         FROM user_vault_unlock_methods
+         WHERE user_id = $user_id
+         ORDER BY method_type ASC, created_at ASC"
+    );
+    $out = [];
+    if ($rs) {
+        while ($row = mysqli_fetch_assoc($rs)) {
+            $out[] = $row;
+        }
+    }
+    return $out;
+}
+
+function vaultUserHasMethod(int $user_id, string $method_type, mysqli $mysqli): bool
+{
+    $user_id = intval($user_id);
+    $type_e  = mysqli_real_escape_string($mysqli, $method_type);
+    $row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT COUNT(*) AS n
+         FROM user_vault_unlock_methods
+         WHERE user_id = $user_id AND method_type = '$type_e'"
+    ));
+    return $row && intval($row['n']) > 0;
+}
+
+/**
+ * Wrap the master key under a PIN-derived KEK and store it.
+ *
+ * @return int the new method_id, or 0 on failure
+ */
+function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, #[\SensitiveParameter] string $pin, string $label, mysqli $mysqli): int
+{
+    if (strlen($pin) < VAULT_PIN_MIN_LENGTH) {
+        throw new RuntimeException('PIN is too short (minimum ' . VAULT_PIN_MIN_LENGTH . ' characters)');
+    }
+    if ($master_key === '') {
+        throw new RuntimeException('master key is empty');
+    }
+
+    $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $kek  = deriveKekArgon2id($pin, $salt);
+    $blob = cryptoEncryptV2($master_key, $kek);
+    sodium_memzero($kek);
+
+    $salt_b64    = base64_encode($salt);
+    $wrapped_b64 = base64_encode($blob);
+
+    $salt_e    = mysqli_real_escape_string($mysqli, $salt_b64);
+    $wrapped_e = mysqli_real_escape_string($mysqli, $wrapped_b64);
+    $label_e   = mysqli_real_escape_string($mysqli, $label !== '' ? $label : 'Vault PIN');
+    $user_id   = intval($user_id);
+
+    // One PIN per user — replace if exists
+    mysqli_query(
+        $mysqli,
+        "DELETE FROM user_vault_unlock_methods
+         WHERE user_id = $user_id AND method_type = 'pin'"
+    );
+
+    mysqli_query(
+        $mysqli,
+        "INSERT INTO user_vault_unlock_methods
+         SET user_id = $user_id,
+             method_type = 'pin',
+             label = '$label_e',
+             salt = '$salt_e',
+             wrapped_master_key = '$wrapped_e',
+             created_at = NOW()"
+    );
+    return intval(mysqli_insert_id($mysqli));
+}
+
+function vaultDeleteMethod(int $method_id, int $user_id, mysqli $mysqli): bool
+{
+    $method_id = intval($method_id);
+    $user_id   = intval($user_id);
+    mysqli_query(
+        $mysqli,
+        "DELETE FROM user_vault_unlock_methods
+         WHERE method_id = $method_id AND user_id = $user_id"
+    );
+    return mysqli_affected_rows($mysqli) > 0;
+}
+
+function vaultIsLocked(array $method_row): bool
+{
+    if (empty($method_row['locked_until'])) {
+        return false;
+    }
+    return strtotime($method_row['locked_until']) > time();
+}
+
+/**
+ * Try to unlock the vault for $user_id using $pin.
+ * On success, returns the master key (raw bytes).
+ * On wrong PIN, increments failed_attempts (and may lock the method).
+ * On non-existent or locked method, returns null.
+ */
+function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin, mysqli $mysqli): ?string
+{
+    $user_id = intval($user_id);
+    $row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT method_id, salt, wrapped_master_key, failed_attempts, locked_until
+         FROM user_vault_unlock_methods
+         WHERE user_id = $user_id AND method_type = 'pin'
+         LIMIT 1"
+    ));
+    if (!$row) {
+        return null;
+    }
+    if (vaultIsLocked($row)) {
+        return null;
+    }
+
+    $method_id = intval($row['method_id']);
+    $salt      = base64_decode($row['salt'], true);
+    $wrapped   = base64_decode($row['wrapped_master_key'], true);
+    if ($salt === false || $wrapped === false || strlen($salt) !== SODIUM_CRYPTO_PWHASH_SALTBYTES) {
+        // Stored row is malformed; treat as an unlock failure.
+        return null;
+    }
+
+    try {
+        $kek    = deriveKekArgon2id($pin, $salt);
+        $master = cryptoDecryptV2($wrapped, $kek);
+        sodium_memzero($kek);
+    } catch (Throwable $e) {
+        // Wrong PIN, or tampered ciphertext. Increment failure counter.
+        $new_attempts = intval($row['failed_attempts']) + 1;
+        if ($new_attempts >= VAULT_LOCKOUT_THRESHOLD) {
+            mysqli_query(
+                $mysqli,
+                "UPDATE user_vault_unlock_methods
+                 SET failed_attempts = $new_attempts,
+                     locked_until = DATE_ADD(NOW(), INTERVAL " . VAULT_LOCKOUT_MINUTES . " MINUTE)
+                 WHERE method_id = $method_id"
+            );
+        } else {
+            mysqli_query(
+                $mysqli,
+                "UPDATE user_vault_unlock_methods
+                 SET failed_attempts = $new_attempts
+                 WHERE method_id = $method_id"
+            );
+        }
+        return null;
+    }
+
+    // Success: reset counters
+    mysqli_query(
+        $mysqli,
+        "UPDATE user_vault_unlock_methods
+         SET failed_attempts = 0,
+             locked_until = NULL,
+             last_used_at = NOW()
+         WHERE method_id = $method_id"
+    );
+    return $master;
+}
+
+/**
+ * Read the master key out of the current session if it is unlocked.
+ * Returns null if there is no unlocked vault in this session.
+ */
+function vaultMasterKeyFromSession(): ?string
+{
+    if (empty($_SESSION['user_encryption_session_ciphertext'])
+        || empty($_SESSION['user_encryption_session_iv'])
+        || empty($_COOKIE['user_encryption_session_key'])) {
+        return null;
+    }
+    $master = openssl_decrypt(
+        $_SESSION['user_encryption_session_ciphertext'],
+        'aes-128-cbc',
+        $_COOKIE['user_encryption_session_key'],
+        0,
+        $_SESSION['user_encryption_session_iv']
+    );
+    return ($master === false || $master === '') ? null : $master;
+}

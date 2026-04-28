@@ -2,7 +2,67 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 2: Microsoft Entra ID SSO for agents
+## Unreleased — Phase 3: Vault unlock with PIN
+
+This phase adds a vault PIN as an unlock method, letting SSO-authenticated agents decrypt stored credentials without their account password. WebAuthn PRF is reserved as a future unlock method type — the schema is forward-compatible and a later phase can add it without further migrations.
+
+### Added
+- `includes/vault_unlock.php` — vault unlock layer:
+  - `vaultSetPin()` — wraps the master key under an Argon2id-derived KEK and stores it.
+  - `vaultTryUnlockWithPin()` — verifies a PIN, returns the unwrapped master key on success. Increments `failed_attempts` on failure; locks the method for 15 minutes after 5 failed attempts.
+  - `vaultListMethods()`, `vaultDeleteMethod()`, `vaultUserHasMethod()`, `vaultMasterKeyFromSession()`.
+- `agent/vault_unlock.php` — PIN entry page for SSO-authenticated agents. After a successful PIN, calls `generateUserSessionKey()` so credential decryption works for the rest of the session.
+- `agent/user/post/vault_methods.php` — POST handler for setting a PIN and removing methods. CSRF-protected. PIN ≥ 8 characters; mismatch and master-key-absence both return user-visible errors.
+- `agent/user/user_security.php` — UI block listing enrolled vault unlock methods (with status, last-used, lock indicator) and a form to set or update the vault PIN. The PIN form is gated on the master key being present in the current session, so SSO-only sessions cannot set a PIN until the user signs in once with their account password.
+- `scripts/vault_unlock_self_test.php` — five-test offline self-test covering PIN wrap/unwrap, wrong-PIN rejection, wrong-salt rejection, IV uniqueness, and tamper detection. All passing.
+
+### Changed
+- `agent/login_entra_callback.php` — after successful SSO, redirects to `/agent/vault_unlock.php` if the user has a PIN enrolled. Sessions without an enrolled method continue to the start page with the vault locked.
+- Database version: `2.4.4.2 → 2.4.4.3`.
+
+### Schema
+New table `user_vault_unlock_methods`:
+- `method_id INT PRIMARY KEY`
+- `user_id INT` (FK → users, ON DELETE CASCADE)
+- `method_type ENUM('pin','webauthn_prf')` — webauthn_prf reserved for a future phase
+- `label`, `salt`, `wrapped_master_key`
+- `credential_id`, `public_key`, `sign_count`, `prf_salt` — reserved for future WebAuthn PRF support; null for PIN methods
+- `failed_attempts`, `locked_until` — rate-limit state
+- `created_at`, `last_used_at`
+
+### Operator action required
+- Run the database migration: **Admin → Update → Update Database** or `php scripts/update_cli.php --update_db`.
+- Run the self-tests:
+  ```
+  php scripts/crypto_self_test.php
+  php scripts/entra_sso_self_test.php
+  php scripts/vault_unlock_self_test.php
+  ```
+
+### Workflow
+
+**For an existing agent who wants to use SSO + PIN going forward:**
+1. Sign in once with the account password (this puts the master key in session).
+2. Go to **My Account → Security → Vault unlock methods** and set a PIN.
+3. From now on, sign in via Microsoft. After SSO succeeds, ITFlow asks for the PIN before showing any credential pages.
+
+**For a JIT-provisioned SSO-only agent:**
+- They have no password, so they cannot bootstrap a PIN themselves. An admin needs to create a temporary password, share it out-of-band, have the user log in once and set a PIN, then optionally delete the password.
+- Phase 4+ may add an admin-driven enrollment flow that does not require a password round-trip.
+
+### Security properties
+- PIN is hashed with Argon2id (libsodium INTERACTIVE preset, 16-byte salt) before deriving the KEK. The PIN itself is never stored.
+- Master key is wrapped under the PIN-KEK using AES-256-GCM (the same v2 stack as Phase 1).
+- Failed PIN attempts are throttled per method: 5 strikes lock the method for 15 minutes. The user can still unlock via another enrolled method (when more methods exist).
+- `generateUserSessionKey()` is called after a successful unlock, so the session-level wrapping (HttpOnly cookie + server-side ciphertext) is the same as for password-based logins. Existing credential decryption code paths are unchanged.
+- The vault PIN is intentionally distinct from the account password. Users should not reuse them.
+
+### Known limitations
+- WebAuthn PRF (the planned hardware-bound unlock factor) is not implemented yet. Schema columns are reserved.
+- Admin-driven enrollment for SSO-only users is not implemented.
+- The password-login flow does not yet require a separate PIN unlock; password sign-in unlocks the vault as it always has. The PIN is purely additive.
+
+## v0.3.0-nis2-sso — Phase 2: Microsoft Entra ID SSO for agents
 
 This phase adds OIDC sign-in via Microsoft Entra ID (Azure AD) for agent users. The flow is implemented from scratch with security properties that the upstream client-portal Azure flow does not provide: PKCE, nonce, RS256 ID-token signature verification against the tenant JWKS, and tenant-restricted issuer validation.
 
