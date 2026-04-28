@@ -1959,6 +1959,29 @@ CREATE TABLE `remember_tokens` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `user_webauthn_credentials` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `user_webauthn_credentials`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_webauthn_credentials` (
+  `cred_id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `credential_id` varchar(512) NOT NULL,
+  `public_key_pem` text NOT NULL,
+  `cose_alg` int(11) NOT NULL,
+  `sign_count` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `label` varchar(100) DEFAULT NULL,
+  `created_at` datetime NOT NULL,
+  `last_used_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`cred_id`),
+  UNIQUE KEY `uniq_cred_id` (`credential_id`),
+  KEY `idx_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `security_audit_log` (NIS2 fork)
 --
 

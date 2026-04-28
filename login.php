@@ -627,6 +627,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
 $show_mfa_form   = (isset($token_field) && !empty($token_field));
 $show_login_form = (!$show_role_choice && !$show_mfa_form);
 
+// Detect WebAuthn enrolment for the pending MFA user, so the MFA form can
+// offer "Use security key" alongside the TOTP code field.
+$webauthn_available = false;
+if ($show_mfa_form && !empty($_SESSION['pending_mfa_login']['agent_user_id'])) {
+    $pending_uid = intval($_SESSION['pending_mfa_login']['agent_user_id']);
+    $row_wa = mysqli_fetch_assoc(mysqli_query($mysqli,
+        "SELECT COUNT(*) AS n FROM user_webauthn_credentials WHERE user_id = $pending_uid"
+    ));
+    $webauthn_available = $row_wa && intval($row_wa['n']) > 0;
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -741,6 +752,15 @@ $show_login_form = (!$show_role_choice && !$show_mfa_form);
                     </div>
 
                     <button type="submit" class="btn btn-dark btn-block mb-3" name="mfa_login">Verify & Sign In</button>
+
+                    <?php if ($webauthn_available): ?>
+                        <hr>
+                        <button type="button" id="webauthn_login_btn" class="btn btn-outline-primary btn-block mb-2">
+                            <i class="fas fa-fingerprint mr-2"></i>Use security key
+                        </button>
+                        <div id="webauthn_login_status" class="small text-center"></div>
+                        <script src="/plugins/webauthn/webauthn-login.js"></script>
+                    <?php endif; ?>
                 <?php endif; ?>
 
             </form>

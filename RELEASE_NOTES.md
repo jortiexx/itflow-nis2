@@ -2,7 +2,60 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 5: Tamper-evident security audit log
+## Unreleased — Phase 6: WebAuthn second factor
+
+This phase adds phishing-resistant MFA via WebAuthn (FIDO2). Agents can register hardware security keys (YubiKey, platform passkeys, Touch ID, Windows Hello) and use them as a second factor instead of TOTP. Closes NIS2 Article 21(2)(j) for ITFlow's authentication path.
+
+### Added
+- `includes/webauthn.php` — hand-rolled WebAuthn server library (no composer dependency). Implements:
+  - CBOR decoder (subset needed for COSE / attestation objects)
+  - DER builders for SubjectPublicKeyInfo
+  - COSE_Key → PEM conversion for both EC2 (P-256) and RSA
+  - Authenticator data parser (flags, counter, attested credential data)
+  - `webauthnVerifyRegistration()` — full registration validation: clientDataJSON challenge/origin/type, RP ID hash, UP/UV flags, supported algorithm. Attestation format `none`.
+  - `webauthnVerifyAssertion()` — full assertion validation: signature against stored public key, challenge/origin checks, counter regression detection.
+- `scripts/webauthn_self_test.php` — 15-test self-test covering CBOR primitives, COSE EC2 + RSA round-trips against fresh keypairs, end-to-end registration with synthetic attestation, end-to-end assertion verification, counter regression rejection, challenge mismatch rejection. All passing.
+- `agent/user/webauthn_register_options.php` — issues PublicKeyCredentialCreationOptions JSON.
+- `agent/user/webauthn_register_verify.php` — verifies the registration response and stores the credential (label, public key PEM, COSE alg, sign count).
+- `agent/user/post/webauthn.php` — credential delete handler (CSRF-protected).
+- `login_webauthn_options.php` — issues PublicKeyCredentialRequestOptions during the MFA step.
+- `login_webauthn_verify.php` — verifies the assertion, regenerates the session id, sets up encryption session keys (mirrors the post-MFA branch of login.php), logs the event.
+- `plugins/webauthn/webauthn-login.js` — small browser-side helper for the assertion ceremony. External file so the strict CSP on the login page allows it.
+- New table `user_webauthn_credentials`.
+
+### Changed
+- `agent/user/user_security.php` — adds a "Security keys (WebAuthn)" card with credential list and registration form. The registration JS calls navigator.credentials.create() against the options endpoint, then POSTs the response to the verify endpoint.
+- `login.php` — when a user reaches the MFA step and has at least one WebAuthn credential enrolled, a "Use security key" button is rendered alongside the TOTP code field. JavaScript loaded from `/plugins/webauthn/webauthn-login.js`.
+- Database version: `2.4.4.4 → 2.4.4.5`.
+
+### Schema
+New table `user_webauthn_credentials`:
+- `cred_id INT PRIMARY KEY`
+- `user_id INT` (FK → users, ON DELETE CASCADE)
+- `credential_id VARCHAR(512) UNIQUE` — base64url
+- `public_key_pem TEXT` — converted from the COSE_Key the authenticator returned
+- `cose_alg INT` — -7 (ES256) or -257 (RS256)
+- `sign_count BIGINT UNSIGNED` — anti-clone counter
+- `label VARCHAR(100)`, `created_at`, `last_used_at`
+
+### Operator action required
+1. Run the database migration: **Admin → Update → Update Database** or `php scripts/update_cli.php --update_db`.
+2. Run the self-test: `php scripts/webauthn_self_test.php`.
+3. Have agents enroll keys via **My Account → Security → Security keys (WebAuthn)**. They need a HTTPS deployment — WebAuthn refuses HTTP except on localhost.
+4. Once enrolled, the next sign-in will offer "Use security key" alongside the TOTP code field.
+
+### Security properties
+- Phishing-resistant: the assertion is bound to the origin via clientDataJSON and the RP ID hash. Phishing sites cannot forward the assertion to the real site.
+- Replay-resistant: each assertion uses a fresh server-issued challenge. Sign counter increases monotonically; regression rejected as a likely cloned authenticator.
+- User Verification required: assertions where the UV bit is not set are rejected. This forces a PIN or biometric on the authenticator side.
+- Transport: CBOR / COSE / signature checks all done server-side; the JS helper is purely transport.
+
+### Known limitations
+- Attestation is `none`. We trust the user's own enrolment action; we do not validate the authenticator's manufacturer chain. A future hardening step could require packed/tpm/u2f attestation against a metadata service.
+- WebAuthn complements but does not replace TOTP — both flows remain available. Operators who want to enforce phishing-resistant MFA must remove TOTP enrolment for the relevant agents manually.
+- WebAuthn is not yet wired into the SSO + vault unlock path (Phase 3 PIN remains the only vault unlock method). The user_vault_unlock_methods schema's PRF columns are still reserved for a future phase.
+
+## v0.6.0-nis2-audit — Phase 5: Tamper-evident security audit log
 
 This phase adds an append-only, hash-chained security audit log alongside the existing application logs. NIS2 Article 21(2)(b) (incident handling) and 21(2)(f) (effectiveness assessment) require evidence that security-relevant events have not been retroactively modified or deleted. The hash chain provides that evidence cryptographically.
 

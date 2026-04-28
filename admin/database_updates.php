@@ -4487,6 +4487,29 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.4'");
     }
 
+    // 2.4.4.4 -> 2.4.4.5: WebAuthn credentials table for second-factor auth
+    if (CURRENT_DATABASE_VERSION == '2.4.4.4') {
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `user_webauthn_credentials` (
+                `cred_id` INT NOT NULL AUTO_INCREMENT,
+                `user_id` INT NOT NULL,
+                `credential_id` VARCHAR(512) NOT NULL,
+                `public_key_pem` TEXT NOT NULL,
+                `cose_alg` INT NOT NULL,
+                `sign_count` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `label` VARCHAR(100) NULL DEFAULT NULL,
+                `created_at` DATETIME NOT NULL,
+                `last_used_at` DATETIME NULL DEFAULT NULL,
+                PRIMARY KEY (`cred_id`),
+                UNIQUE KEY `uniq_cred_id` (`credential_id`),
+                KEY `idx_user` (`user_id`),
+                CONSTRAINT `fk_user_webauthn_credentials_user`
+                    FOREIGN KEY (`user_id`) REFERENCES `users`(`user_id`) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+        ");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.5'");
+    }
+
 } else {
     // Up-to-date
 }

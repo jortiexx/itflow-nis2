@@ -9,6 +9,15 @@ $remember_token_count = mysqli_num_rows($sql_remember_tokens);
 $vault_methods = vaultListMethods($session_user_id, $mysqli);
 $vault_master_key_present = (vaultMasterKeyFromSession() !== null);
 
+$webauthn_creds = [];
+$rs = mysqli_query($mysqli, "
+    SELECT cred_id, label, cose_alg, created_at, last_used_at
+    FROM user_webauthn_credentials
+    WHERE user_id = $session_user_id
+    ORDER BY created_at ASC
+");
+if ($rs) while ($r = mysqli_fetch_assoc($rs)) $webauthn_creds[] = $r;
+
 ?>
 
 <div class="card card-dark">
@@ -51,6 +60,116 @@ $vault_master_key_present = (vaultMasterKeyFromSession() !== null);
 
     </div>
 </div>
+
+<div class="card card-dark">
+    <div class="card-header">
+        <h3 class="card-title"><i class="fas fa-fw fa-fingerprint mr-2"></i>Security keys (WebAuthn)</h3>
+    </div>
+    <div class="card-body">
+        <p class="small text-muted">
+            Register a hardware security key (YubiKey, Windows Hello, Touch ID, platform passkey) as a phishing-resistant second factor.
+            Once enrolled, you'll see a "Use security key" button at sign-in instead of needing a TOTP code.
+        </p>
+
+        <?php if (empty($webauthn_creds)): ?>
+            <p class="text-muted small">No security keys registered.</p>
+        <?php else: ?>
+            <table class="table table-sm">
+                <thead><tr><th>Label</th><th>Algorithm</th><th>Registered</th><th>Last used</th><th></th></tr></thead>
+                <tbody>
+                <?php foreach ($webauthn_creds as $c): ?>
+                    <tr>
+                        <td><?= nullable_htmlentities($c['label']) ?></td>
+                        <td><?= intval($c['cose_alg']) === -7 ? 'ES256' : (intval($c['cose_alg']) === -257 ? 'RS256' : '?') ?></td>
+                        <td><?= nullable_htmlentities($c['created_at']) ?></td>
+                        <td><?= nullable_htmlentities($c['last_used_at'] ?? '-') ?></td>
+                        <td>
+                            <form action="post.php" method="post" class="d-inline" onsubmit="return confirm('Remove this security key?');">
+                                <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+                                <input type="hidden" name="cred_id" value="<?= intval($c['cred_id']) ?>">
+                                <button type="submit" name="delete_webauthn_credential" class="btn btn-sm btn-outline-danger">
+                                    <i class="fa fa-trash"></i>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+
+        <hr>
+        <h5>Register a new security key</h5>
+        <div class="form-group">
+            <label>Label</label>
+            <input type="text" id="webauthn_label" class="form-control" maxlength="100" placeholder="e.g. YubiKey blue, Touch ID Macbook">
+        </div>
+        <button type="button" id="webauthn_register_btn" class="btn btn-primary">
+            <i class="fa fa-plus mr-2"></i>Register security key
+        </button>
+        <div id="webauthn_register_status" class="mt-2 small"></div>
+    </div>
+</div>
+
+<script>
+(function () {
+    function b64uToBytes(b64u) {
+        const pad = '='.repeat((4 - b64u.length % 4) % 4);
+        const b64 = (b64u + pad).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(b64);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+    function bytesToB64u(buf) {
+        const b = new Uint8Array(buf);
+        let s = '';
+        for (const c of b) s += String.fromCharCode(c);
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    document.getElementById('webauthn_register_btn').addEventListener('click', async function () {
+        const status = document.getElementById('webauthn_register_status');
+        status.textContent = 'Requesting registration challenge…';
+        try {
+            const r = await fetch('webauthn_register_options.php', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('options request failed: ' + r.status);
+            const opts = await r.json();
+            opts.challenge = b64uToBytes(opts.challenge);
+            opts.user.id = b64uToBytes(opts.user.id);
+            (opts.excludeCredentials || []).forEach(c => c.id = b64uToBytes(c.id));
+
+            status.textContent = 'Waiting for your security key…';
+            const cred = await navigator.credentials.create({ publicKey: opts });
+
+            const payload = {
+                id: cred.id,
+                rawId: bytesToB64u(cred.rawId),
+                type: cred.type,
+                response: {
+                    clientDataJSON:    bytesToB64u(cred.response.clientDataJSON),
+                    attestationObject: bytesToB64u(cred.response.attestationObject),
+                },
+            };
+
+            const fd = new FormData();
+            fd.append('csrf_token', '<?= $_SESSION['csrf_token'] ?>');
+            fd.append('credential', JSON.stringify(payload));
+            fd.append('label', document.getElementById('webauthn_label').value || '');
+            const verify = await fetch('webauthn_register_verify.php', { method: 'POST', body: fd, credentials: 'same-origin' });
+            const result = await verify.json();
+            if (!verify.ok || result.error) {
+                status.innerHTML = '<span class="text-danger">Failed: ' + (result.error || 'unknown error') + '</span>';
+                return;
+            }
+            status.innerHTML = '<span class="text-success">Security key registered. Reload to see it in the list.</span>';
+            setTimeout(() => location.reload(), 1500);
+        } catch (e) {
+            status.innerHTML = '<span class="text-danger">' + (e.message || e) + '</span>';
+        }
+    });
+})();
+</script>
 
 <div class="card card-dark">
     <div class="card-header">
