@@ -460,68 +460,286 @@ function generateUserSessionKey($site_encryption_master_key)
 }
 
 // Decrypts an encrypted password (website/asset credentials), returns it as a string
+// Reads both v2 ("v2:..." prefix, AES-256-GCM) and legacy v1 (AES-128-CBC).
 function decryptCredentialEntry($credential_password_ciphertext)
 {
-
-    // Split the credential into IV and Ciphertext
-    $credential_iv =  substr($credential_password_ciphertext, 0, 16);
-    $credential_ciphertext = $salt = substr($credential_password_ciphertext, 16);
-
     // Get the user session info.
     $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'];
-    $user_encryption_session_iv =  $_SESSION['user_encryption_session_iv'];
-    $user_encryption_session_key = $_COOKIE['user_encryption_session_key'];
+    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv'];
+    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key'];
 
-    // Decrypt the session key to get the master key
-    $site_encryption_master_key = openssl_decrypt($user_encryption_session_ciphertext, 'aes-128-cbc', $user_encryption_session_key, 0, $user_encryption_session_iv);
+    // Decrypt the session key to get the master key (still AES-128-CBC at session layer)
+    $site_encryption_master_key = openssl_decrypt(
+        $user_encryption_session_ciphertext, 'aes-128-cbc',
+        $user_encryption_session_key, 0, $user_encryption_session_iv
+    );
 
-    // Decrypt the credential password using the master key
-    return openssl_decrypt($credential_ciphertext, 'aes-128-cbc', $site_encryption_master_key, 0, $credential_iv);
+    if ($site_encryption_master_key === false) {
+        return false;
+    }
+
+    // v2 path
+    if (isCredentialV2($credential_password_ciphertext)) {
+        try {
+            return decryptCredentialEntryV2($credential_password_ciphertext, $site_encryption_master_key);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    // Legacy v1 path
+    $credential_iv         = substr($credential_password_ciphertext, 0, 16);
+    $credential_ciphertext = substr($credential_password_ciphertext, 16);
+    return openssl_decrypt(
+        $credential_ciphertext, 'aes-128-cbc',
+        $site_encryption_master_key, 0, $credential_iv
+    );
 }
 
 // Encrypts a website/asset credential password
+// Always writes v2 (AES-256-GCM with HKDF-expanded master key)
 function encryptCredentialEntry($credential_password_cleartext)
 {
-    $iv = randomString();
-
     // Get the user session info.
     $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'];
-    $user_encryption_session_iv =  $_SESSION['user_encryption_session_iv'];
-    $user_encryption_session_key = $_COOKIE['user_encryption_session_key'];
+    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv'];
+    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key'];
 
-    //Decrypt the session key to get the master key
-    $site_encryption_master_key = openssl_decrypt($user_encryption_session_ciphertext, 'aes-128-cbc', $user_encryption_session_key, 0, $user_encryption_session_iv);
+    $site_encryption_master_key = openssl_decrypt(
+        $user_encryption_session_ciphertext, 'aes-128-cbc',
+        $user_encryption_session_key, 0, $user_encryption_session_iv
+    );
 
-    //Encrypt the website/asset credential using the master key
-    $ciphertext = openssl_encrypt($credential_password_cleartext, 'aes-128-cbc', $site_encryption_master_key, 0, $iv);
+    if ($site_encryption_master_key === false) {
+        return false;
+    }
 
-    return $iv . $ciphertext;
+    return encryptCredentialEntryV2($credential_password_cleartext, $site_encryption_master_key);
 }
 
 function apiDecryptCredentialEntry($credential_ciphertext, $api_key_decrypt_hash, #[\SensitiveParameter]$api_key_decrypt_password)
 {
-    // Split the Credential entry (username/password) into IV and Ciphertext
-    $credential_iv =  substr($credential_ciphertext, 0, 16);
-    $credential_ciphertext = $salt = substr($credential_ciphertext, 16);
-
     // Decrypt the api hash to get the master key
     $site_encryption_master_key = decryptUserSpecificKey($api_key_decrypt_hash, $api_key_decrypt_password);
 
-    // Decrypt the credential password using the master key
-    return openssl_decrypt($credential_ciphertext, 'aes-128-cbc', $site_encryption_master_key, 0, $credential_iv);
+    if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+        return false;
+    }
+
+    // v2 path
+    if (isCredentialV2($credential_ciphertext)) {
+        try {
+            return decryptCredentialEntryV2($credential_ciphertext, $site_encryption_master_key);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    // Legacy v1
+    $credential_iv         = substr($credential_ciphertext, 0, 16);
+    $credential_ciphertext = substr($credential_ciphertext, 16);
+    return openssl_decrypt(
+        $credential_ciphertext, 'aes-128-cbc',
+        $site_encryption_master_key, 0, $credential_iv
+    );
 }
 
 function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_decrypt_hash, #[\SensitiveParameter]$api_key_decrypt_password)
 {
-    $iv = randomString();
-
     // Decrypt the api hash to get the master key
     $site_encryption_master_key = decryptUserSpecificKey($api_key_decrypt_hash, $api_key_decrypt_password);
 
-    // Encrypt the credential using the master key
-    $ciphertext = openssl_encrypt($credential_cleartext, 'aes-128-cbc', $site_encryption_master_key, 0, $iv);
+    if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+        return false;
+    }
 
-    return $iv . $ciphertext;
+    return encryptCredentialEntryV2($credential_cleartext, $site_encryption_master_key);
+}
+
+// =====================================================================
+// NIS2 fork: v2 crypto stack (AES-256-GCM + Argon2id)
+//
+// Format of a v2 ciphertext blob (raw binary):
+//   +--------+--------+----------+------------+----------+
+//   | ver(1) | alg(1) | iv(12)   | ciphertext | tag(16)  |
+//   +--------+--------+----------+------------+----------+
+// ver = 0x02, alg = 0x01 (AES-256-GCM)
+//
+// Wrapped master key (stored in users.user_specific_encryption_ciphertext_v2):
+//   base64( salt(16) || v2_blob )
+//   where v2_blob encrypts the master key under Argon2id(password, salt) → 32-byte KEK
+//
+// Credential entries written by this fork are stored as:
+//   "v2:" || base64(v2_blob)
+// The "v2:" prefix is unambiguous because legacy v1 entries start with a 16-char
+// base64url IV (alphanumeric + -_), which never contains a colon.
+// =====================================================================
+
+const CRYPTO_VERSION_V2        = "\x02";
+const CRYPTO_ALGO_AES256_GCM   = "\x01";
+const CREDENTIAL_V2_PREFIX     = 'v2:';
+
+function cryptoEncryptV2(#[\SensitiveParameter] string $plaintext, #[\SensitiveParameter] string $key32): string
+{
+    if (strlen($key32) !== 32) {
+        throw new RuntimeException('cryptoEncryptV2: key must be exactly 32 bytes');
+    }
+    $iv  = random_bytes(12);
+    $tag = '';
+    $ct  = openssl_encrypt(
+        $plaintext, 'aes-256-gcm', $key32,
+        OPENSSL_RAW_DATA, $iv, $tag, '', 16
+    );
+    if ($ct === false) {
+        throw new RuntimeException('cryptoEncryptV2: openssl_encrypt failed');
+    }
+    return CRYPTO_VERSION_V2 . CRYPTO_ALGO_AES256_GCM . $iv . $ct . $tag;
+}
+
+function cryptoDecryptV2(string $blob, #[\SensitiveParameter] string $key32): string
+{
+    if (strlen($key32) !== 32) {
+        throw new RuntimeException('cryptoDecryptV2: key must be exactly 32 bytes');
+    }
+    if (strlen($blob) < 2 + 12 + 16) {
+        throw new RuntimeException('cryptoDecryptV2: blob too short');
+    }
+    if ($blob[0] !== CRYPTO_VERSION_V2 || $blob[1] !== CRYPTO_ALGO_AES256_GCM) {
+        throw new RuntimeException('cryptoDecryptV2: unknown ciphertext version or algorithm');
+    }
+    $iv  = substr($blob, 2, 12);
+    $tag = substr($blob, -16);
+    $ct  = substr($blob, 14, -16);
+    $pt  = openssl_decrypt(
+        $ct, 'aes-256-gcm', $key32,
+        OPENSSL_RAW_DATA, $iv, $tag
+    );
+    if ($pt === false) {
+        throw new RuntimeException('cryptoDecryptV2: decryption or authentication failed');
+    }
+    return $pt;
+}
+
+function deriveKekArgon2id(#[\SensitiveParameter] string $secret, string $salt): string
+{
+    if (!function_exists('sodium_crypto_pwhash')) {
+        throw new RuntimeException('deriveKekArgon2id: libsodium is required (sodium_crypto_pwhash missing)');
+    }
+    if (strlen($salt) !== SODIUM_CRYPTO_PWHASH_SALTBYTES) {
+        throw new RuntimeException('deriveKekArgon2id: salt must be ' . SODIUM_CRYPTO_PWHASH_SALTBYTES . ' bytes');
+    }
+    return sodium_crypto_pwhash(
+        32, $secret, $salt,
+        SODIUM_CRYPTO_PWHASH_OPSLIMIT_INTERACTIVE,
+        SODIUM_CRYPTO_PWHASH_MEMLIMIT_INTERACTIVE,
+        SODIUM_CRYPTO_PWHASH_ALG_ARGON2ID13
+    );
+}
+
+function expandMasterKeyToAes256(#[\SensitiveParameter] string $master_key_raw): string
+{
+    return hash_hkdf('sha256', $master_key_raw, 32, 'itflow-nis2-aes256-v1');
+}
+
+function encryptUserSpecificKeyV2(#[\SensitiveParameter] string $master_key, #[\SensitiveParameter] string $password): string
+{
+    $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $kek  = deriveKekArgon2id($password, $salt);
+    $blob = cryptoEncryptV2($master_key, $kek);
+    sodium_memzero($kek);
+    return base64_encode($salt . $blob);
+}
+
+function decryptUserSpecificKeyV2(string $stored, #[\SensitiveParameter] string $password): string
+{
+    $raw = base64_decode($stored, true);
+    if ($raw === false || strlen($raw) < SODIUM_CRYPTO_PWHASH_SALTBYTES + 30) {
+        throw new RuntimeException('decryptUserSpecificKeyV2: invalid stored value');
+    }
+    $salt = substr($raw, 0, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $blob = substr($raw, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $kek  = deriveKekArgon2id($password, $salt);
+    try {
+        return cryptoDecryptV2($blob, $kek);
+    } finally {
+        sodium_memzero($kek);
+    }
+}
+
+function unlockUserMasterKey(array $user_row, #[\SensitiveParameter] string $password, mysqli $mysqli): ?string
+{
+    // Prefer v2 if present; fail closed if v2 fails (don't silently regress to v1).
+    if (!empty($user_row['user_specific_encryption_ciphertext_v2'])) {
+        try {
+            return decryptUserSpecificKeyV2(
+                $user_row['user_specific_encryption_ciphertext_v2'],
+                $password
+            );
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    // No v2 yet: decrypt v1 and lazy-migrate.
+    if (!empty($user_row['user_specific_encryption_ciphertext'])) {
+        $master_key = decryptUserSpecificKey(
+            $user_row['user_specific_encryption_ciphertext'],
+            $password
+        );
+        if ($master_key === false || $master_key === '') {
+            return null;
+        }
+        $user_id = intval($user_row['user_id']);
+        try {
+            $v2 = encryptUserSpecificKeyV2($master_key, $password);
+            $v2_escaped = mysqli_real_escape_string($mysqli, $v2);
+            mysqli_query(
+                $mysqli,
+                "UPDATE users
+                 SET user_specific_encryption_ciphertext_v2 = '$v2_escaped'
+                 WHERE user_id = $user_id"
+            );
+        } catch (Throwable $e) {
+            error_log("v2 lazy migration failed for user $user_id: " . $e->getMessage());
+        }
+        return $master_key;
+    }
+
+    return null;
+}
+
+function isCredentialV2(string $stored): bool
+{
+    return strncmp($stored, CREDENTIAL_V2_PREFIX, strlen(CREDENTIAL_V2_PREFIX)) === 0;
+}
+
+function decryptCredentialEntryV2(string $stored, #[\SensitiveParameter] string $master_key_raw): string
+{
+    if (!isCredentialV2($stored)) {
+        throw new RuntimeException('decryptCredentialEntryV2: not a v2 credential');
+    }
+    $b64  = substr($stored, strlen(CREDENTIAL_V2_PREFIX));
+    $blob = base64_decode($b64, true);
+    if ($blob === false) {
+        throw new RuntimeException('decryptCredentialEntryV2: invalid base64');
+    }
+    $key32 = expandMasterKeyToAes256($master_key_raw);
+    try {
+        return cryptoDecryptV2($blob, $key32);
+    } finally {
+        sodium_memzero($key32);
+    }
+}
+
+function encryptCredentialEntryV2(#[\SensitiveParameter] string $plaintext, #[\SensitiveParameter] string $master_key_raw): string
+{
+    $key32 = expandMasterKeyToAes256($master_key_raw);
+    try {
+        $blob = cryptoEncryptV2($plaintext, $key32);
+        return CREDENTIAL_V2_PREFIX . base64_encode($blob);
+    } finally {
+        sodium_memzero($key32);
+    }
 }
 
 // Get domain general info (whois + NS/A/MX records)

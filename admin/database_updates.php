@@ -4400,6 +4400,22 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
     //     mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.5'");
     // }
 
+    // ====================================================================
+    // NIS2 fork migrations begin here.
+    // Sub-versions (2.4.4.x) sit above the upstream linear version chain.
+    // When merging a future upstream version (e.g. 2.4.5), shift this block
+    // to start from the new upstream version and add a one-shot migration
+    // 2.4.4.N -> 2.4.5 so existing fork installations catch up.
+    // ====================================================================
+
+    // 2.4.4 -> 2.4.4.1: AES-256-GCM + Argon2id wrapped master key column
+    if (CURRENT_DATABASE_VERSION == '2.4.4') {
+        mysqli_query($mysqli, "ALTER TABLE `users`
+            ADD COLUMN `user_specific_encryption_ciphertext_v2` VARCHAR(512) NULL DEFAULT NULL
+            AFTER `user_specific_encryption_ciphertext`");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.1'");
+    }
+
 } else {
     // Up-to-date
 }

@@ -2865,6 +2865,7 @@ CREATE TABLE `users` (
   `user_password_reset_token_expire` datetime DEFAULT NULL,
   `user_avatar` varchar(200) DEFAULT NULL,
   `user_specific_encryption_ciphertext` varchar(200) DEFAULT NULL,
+  `user_specific_encryption_ciphertext_v2` varchar(512) DEFAULT NULL,
   `user_php_session` varchar(255) DEFAULT NULL,
   `user_extension_key` varchar(18) DEFAULT NULL,
   `user_created_at` datetime NOT NULL DEFAULT current_timestamp(),

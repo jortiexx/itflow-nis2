@@ -49,10 +49,14 @@ Decryption is version-aware. Blobs without the `0x02` prefix are decrypted via t
 Vault unlock factor (WebAuthn PRF output OR Argon2id(PIN))
         |
         v
-   User KEK (32 bytes)
+   User KEK (32 bytes, Argon2id-derived)
         |
         v
-   Master key (32 bytes, shared across all agents)
+   Master key (16 bytes, shared across all agents — legacy carry-over)
+        |
+        v (HKDF-SHA256 expansion to 32 bytes)
+        |
+   AES-256-GCM key
         |
         v
    Stored credential ciphertexts
@@ -60,18 +64,21 @@ Vault unlock factor (WebAuthn PRF output OR Argon2id(PIN))
 
 The master key is wrapped once per user with a per-user KEK derived from the user's vault-unlock factor. There is no single key-encryption key stored on disk in plaintext.
 
+The master key remains 16 bytes for backward compatibility with v1 ciphertexts. AES-256-GCM operations use an HKDF-SHA256-expanded 32-byte key derived from the same master key. The cipher is AES-256-GCM; input keying material has 128-bit entropy. A future phase may regenerate the master key as a fresh 32-byte value, requiring a one-time re-encryption pass.
+
 ## Key lifecycle
 
 ### Generation
 
-- Master key: generated once during setup using `random_bytes(32)`. Persisted only in encrypted form (wrapped per user).
-- Per-user KEK: derived at unlock time, never stored.
-- Per-encryption IVs: `random_bytes(12)` per operation.
+- Master key: generated once during setup. Persisted only in encrypted form (wrapped per user).
+- Per-user KEK: derived at unlock time via Argon2id, never stored.
+- Per-encryption IVs: `random_bytes(12)` per operation, never reused with the same key.
 
 ### Storage
 
-- Wrapped master key: in `users.user_specific_encryption_ciphertext_v2` (or v1 column for legacy).
-- Vault unlock material: in `user_vault_unlock_methods` table.
+- Wrapped master key v1 (legacy): in `users.user_specific_encryption_ciphertext` (PBKDF2-SHA256 + AES-128-CBC).
+- Wrapped master key v2: in `users.user_specific_encryption_ciphertext_v2` (Argon2id + AES-256-GCM).
+- The v2 wrapping is generated lazily on first login per existing user.
 - No keys ever logged.
 
 ### Rotation

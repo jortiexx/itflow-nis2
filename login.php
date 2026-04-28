@@ -274,11 +274,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                         $pending_token = bin2hex(random_bytes(32));
 
                         // If agent has user-specific encryption ciphertext, decrypt it NOW while password is present.
-                        $agent_master_key = null;
-                        $agent_cipher = $agentRow['user_specific_encryption_ciphertext'] ?? null;
-                        if (!empty($agent_cipher)) {
-                            $agent_master_key = decryptUserSpecificKey($agent_cipher, $password);
-                        }
+                        // unlockUserMasterKey() handles v2 (AES-256-GCM + Argon2id) with v1 fallback and lazy migration.
+                        $agent_master_key = unlockUserMasterKey($agentRow, $password, $mysqli);
 
                         $_SESSION['pending_dual_login'] = [
                             'email'            => $email,
@@ -447,9 +444,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
 
                         } else {
                             // Step 1: initial login (password available in this request)
-                            if (!empty($user_encryption_ciphertext)) {
-                                $site_encryption_master_key = decryptUserSpecificKey($user_encryption_ciphertext, $password);
-                            }
+                            // unlockUserMasterKey() handles v2 with v1 fallback and lazy migration.
+                            $site_encryption_master_key = unlockUserMasterKey($selectedRow, $password, $mysqli);
                         }
 
                         if (!empty($site_encryption_master_key)) {
@@ -482,9 +478,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                                 $agent_master_key = $sess['agent_master_key'];
                             }
                         } else {
-                            if (!empty($user_encryption_ciphertext)) {
-                                $agent_master_key = decryptUserSpecificKey($user_encryption_ciphertext, $password);
-                            }
+                            // unlockUserMasterKey() handles v2 with v1 fallback and lazy migration.
+                            $agent_master_key = unlockUserMasterKey($selectedRow, $password, $mysqli);
                         }
 
                         $_SESSION['pending_mfa_login'] = [
