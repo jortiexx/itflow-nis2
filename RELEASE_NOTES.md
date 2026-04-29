@@ -2,6 +2,35 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.16.1-nis2-sweeper — Phase 15: first-login migration UI with progress bar
+
+Replaces the silent once-per-hour opportunistic sweep from v0.16.0 with a one-shot blocking migration UI on the first admin login after upgrade.
+
+### What it does
+- After login + vault unlock, if there are still plaintext files this admin can encrypt, the next page navigation redirects to `/agent/migrate_legacy_files.php`.
+- The page shows a Bootstrap progress bar + "X / Y encrypted" status line. JS polls `/agent/migrate_legacy_files_step.php` continuously (50ms between batches).
+- Each batch: up to 100 files, hard 3-second time budget, race-safe via `flock(LOCK_EX)` per file. Same AES-256-GCM encryption + SHA-256 + MIME-fill as before.
+- When `remaining` hits zero, the page redirects to the home URL.
+- Stuck-detection: if 5 consecutive batches make no progress, the UI stops and tells the operator to run the CLI script.
+
+### Throughput
+Each batch ~3 seconds, ~100 files (depends on file size — large files self-throttle via the time budget). For 10,000 legacy files: ~5 minutes of progress-bar time. For 1,000: ~30 seconds.
+
+### Why admin-only
+The redirect fires only when `$session_is_admin === true`. Non-admins might hit grant gaps mid-sweep (per-user keypair compartmentalisation under phase 10) which would stall the bar. They're better off navigating normally; the admin completes the migration once.
+
+### Skipped paths (no redirect)
+- The migration page + AJAX endpoint themselves
+- Form handlers (`/agent/post.php`)
+- AJAX endpoints (`/agent/ajax.php`)
+- Any request with `X-Requested-With: XMLHttpRequest`
+
+### Vault still locked?
+The migration page detects `no_master_key` from the sweeper and redirects to `/agent/vault_unlock.php`. After unlock, the next page navigation re-routes back to the migration page.
+
+### CLI alternative
+`scripts/encrypt_legacy_files.php` from v0.16.0 still works for ops who prefer running it offline.
+
 ## v0.16.0-nis2-sweeper — Phase 15: legacy file encryption sweep (auto on first login after upgrade)
 
 Closes the gap left by phase 13's lazy migration: files that were on disk **before** phase 13 was deployed stayed plaintext (`file_encrypted = 0`) — including `.pfx` keystores, `.ovpn` configs, exported credentials, and any other bearer-shaped attachment. Phase 13 only encrypted *new* uploads.

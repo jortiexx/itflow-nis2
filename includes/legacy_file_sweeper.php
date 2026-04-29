@@ -25,6 +25,43 @@
 if (!function_exists('sweepLegacyFilesForClient')) {
 
     /**
+     * How many plaintext files are still on disk that THIS user can sweep
+     * (admin = all clients; user with grants = granted clients only;
+     * user without any grants = unrestricted default).
+     *
+     * Cheap COUNT — used by the migration UI to draw the progress bar
+     * and by load_user_session.php to decide whether to redirect.
+     */
+    function legacyFilesPendingForUser(mysqli $mysqli, int $user_id, bool $is_admin): int
+    {
+        $user_id = intval($user_id);
+
+        $access_clause = '';
+        if (!$is_admin) {
+            $r = mysqli_fetch_assoc(mysqli_query($mysqli,
+                "SELECT COUNT(*) AS n FROM user_client_permissions
+                 WHERE user_id = $user_id"));
+            if ($r && intval($r['n']) > 0) {
+                $access_clause = "AND files.file_client_id IN (
+                    SELECT client_id FROM user_client_permissions
+                    WHERE user_id = $user_id
+                )";
+            }
+        }
+
+        $r = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n
+             FROM files
+             LEFT JOIN client_master_keys cmk ON cmk.client_id = files.file_client_id
+             WHERE files.file_encrypted = 0
+               AND files.file_archived_at IS NULL
+               AND (cmk.legacy_files_swept_at IS NULL OR cmk.client_id IS NULL)
+               $access_clause"));
+        return $r ? intval($r['n']) : 0;
+    }
+
+
+    /**
      * Encrypt up to $limit plaintext files for one client.
      *
      * Returns ['encrypted' => N, 'failed' => M, 'remaining' => K, 'completed' => bool].
