@@ -2,7 +2,55 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 6: WebAuthn second factor
+## Unreleased — Phase 7: WebAuthn PRF for vault unlock
+
+This phase adds hardware-bound vault unlock via the WebAuthn PRF extension. After SSO sign-in, agents tap their security key (Touch ID, Windows Hello, YubiKey 5+, platform passkey) and the vault unlocks in a single ceremony — no PIN typing. The existing PIN method remains as the recovery fallback.
+
+### Added
+- `includes/vault_unlock.php` PRF helpers:
+  - `vaultDeriveKekFromPrf()` — HKDF-SHA256 expansion of the 32-byte PRF output to a 32-byte AES-256-GCM key, namespaced with the label `itflow-vault-prf-v1`.
+  - `vaultStorePrfMethod()` — wraps the master key under the PRF-derived KEK and stores a `webauthn_prf` row using the schema columns reserved in Phase 3 (`credential_id`, `public_key`, `sign_count`, `prf_salt`).
+  - `vaultFindPrfMethodByCredentialId()` and `vaultTryUnlockWithPrf()` for the unlock path, including the same per-method 5-strikes/15-min lockout used by PIN.
+- Enrollment endpoints:
+  - `agent/user/webauthn_prf_register_options.php` — issues `PublicKeyCredentialCreationOptions` with the PRF extension (`extensions.prf.eval.first`).
+  - `agent/user/webauthn_prf_register_verify.php` — verifies the registration response, requires the PRF result returned by the authenticator at registration, wraps the master key, stores the row.
+- Unlock endpoints:
+  - `agent/vault_unlock_prf_options.php` — issues `PublicKeyCredentialRequestOptions` with `extensions.prf.evalByCredential` so each enrolled credential gets its own PRF salt.
+  - `agent/vault_unlock_prf_verify.php` — verifies the assertion signature, decodes the PRF output, unwraps the master key, calls `generateUserSessionKey()`. Tries ES256 then RS256 against the stored PEM.
+- Browser-side helpers (external files; strict CSP allows them as same-origin scripts):
+  - `plugins/webauthn/vault-prf-enroll.js`
+  - `plugins/webauthn/vault-prf-unlock.js`
+- `scripts/vault_prf_self_test.php` — 7-test offline check covering PRF KEK derivation determinism, length, sensitivity, wrap/unwrap round-trip, wrong-PRF rejection, and tamper detection. All passing.
+
+### Changed
+- `agent/vault_unlock.php` — when at least one PRF method is enrolled, renders a "Unlock with security key" button that auto-starts the ceremony on page load (`data-autostart="1"`). The PIN form is shown beneath it as a fallback when also enrolled. PIN-only users see the PIN form directly (unchanged).
+- `agent/user/user_security.php` — adds an "Add hardware unlock" form alongside the existing PIN setup. Both are gated on the master key being present in the current session (so they require a password sign-in or PIN unlock first).
+
+### No schema migration
+Phase 3 already reserved the columns: `credential_id`, `public_key`, `sign_count`, `prf_salt` in `user_vault_unlock_methods`. The PRF rows are stored with `method_type = 'webauthn_prf'` and `salt = ''` (the per-Argon2id salt column is unused for PRF; it's `NOT NULL` in the schema so we store an empty string).
+
+### Security properties
+
+| Property | Vault PIN (Phase 3) | WebAuthn PRF (this phase) |
+|----------|--------------------|---------------------------|
+| KEK derivation | Argon2id(PIN, salt) | HKDF-SHA256(PRF output) |
+| Brute-force at DB-leak | Argon2id-bounded (slow but possible) | Impossible — PRF output never leaves the authenticator |
+| Phishing | PIN typeable on attacker site | Origin-bound; PRF result differs per origin |
+| Replay | Per-method lockout | Server-issued challenge + assertion signature |
+| Recovery | n/a | PIN method retained as fallback (recommended) |
+
+### Operator action required
+- No database migration. Existing self-tests still pass; the new PRF self-test (`scripts/vault_prf_self_test.php`) confirms the KEK derivation and wrap/unwrap.
+- HTTPS is required for WebAuthn except on `localhost`. Production deployments must terminate TLS.
+- Recommended policy (document in your risk register):
+  > Agents must keep at least one PIN method enrolled in addition to PRF, so a lost or unavailable authenticator does not lock them out of the vault permanently.
+
+### Known limitations
+- Cross-device passkey portability depends on the authenticator. Platform passkeys (Touch ID via iCloud, Windows Hello synced via Microsoft account) carry across the user's devices; YubiKeys do not.
+- Bitwarden's passkey storage does not yet support the PRF extension consistently. Recommend using Windows Hello / Touch ID / a hardware key that supports CTAP 2.1+ for PRF.
+- The `cose_alg` is not stored separately for PRF rows; the verifier tries ES256 first then RS256 against the stored PEM. This works for the supported algorithms but is slightly less explicit than the `user_webauthn_credentials` table where it is recorded.
+
+## v0.7.0-nis2-webauthn — Phase 6: WebAuthn second factor
 
 This phase adds phishing-resistant MFA via WebAuthn (FIDO2). Agents can register hardware security keys (YubiKey, platform passkeys, Touch ID, Windows Hello) and use them as a second factor instead of TOTP. Closes NIS2 Article 21(2)(j) for ITFlow's authentication path.
 

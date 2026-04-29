@@ -48,8 +48,9 @@ require_once __DIR__ . '/../includes/load_global_settings.php';
 require_once __DIR__ . '/../includes/inc_set_timezone.php';
 
 $has_pin = vaultUserHasMethod($user_id, 'pin', $mysqli);
+$has_prf = vaultUserHasMethod($user_id, 'webauthn_prf', $mysqli);
 
-if (!$has_pin) {
+if (!$has_pin && !$has_prf) {
     // Nothing to unlock with — let them in but keep vault locked.
     $_SESSION['vault_unlocked'] = false;
     $start = $config_start_page ?? 'clients.php';
@@ -143,36 +144,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php endif; ?>
 
             <p class="small text-muted text-center mb-3">
-                Signed in as <strong><?= htmlentities($user_name) ?></strong>.<br>
-                Enter your vault PIN to access stored credentials.
+                Signed in as <strong><?= htmlentities($user_name) ?></strong>.
             </p>
 
-            <form method="post" autocomplete="off">
-                <input type="hidden" name="csrf_token" value="<?= htmlentities($_SESSION['csrf_token']) ?>">
-
-                <div class="input-group mb-3">
-                    <input type="password" class="form-control" name="pin"
-                           placeholder="Vault PIN" required autofocus
-                           inputmode="text" minlength="<?= VAULT_PIN_MIN_LENGTH ?>">
-                    <div class="input-group-append">
-                        <div class="input-group-text"><i class="fas fa-key"></i></div>
-                    </div>
-                </div>
-
-                <button type="submit" class="btn btn-primary btn-block mb-3">
-                    <i class="fa fa-unlock mr-2"></i>Unlock
+            <?php if ($has_prf): ?>
+                <button type="button" id="vault_prf_unlock_btn"
+                        class="btn btn-primary btn-block mb-2" data-autostart="1">
+                    <i class="fas fa-fingerprint mr-2"></i>Unlock with security key
                 </button>
-            </form>
+                <div id="vault_prf_unlock_status" class="small text-center mb-3"></div>
+                <script src="/plugins/webauthn/vault-prf-unlock.js"></script>
+            <?php endif; ?>
 
-            <p class="small text-muted mb-0">
-                After <?= VAULT_LOCKOUT_THRESHOLD ?> failed attempts the PIN is locked for <?= VAULT_LOCKOUT_MINUTES ?> minutes.
-            </p>
+            <?php if ($has_prf && $has_pin): ?>
+                <hr class="my-2">
+                <p class="small text-muted text-center mb-2">Or use your PIN:</p>
+            <?php endif; ?>
+
+            <?php if ($has_pin): ?>
+                <form method="post" autocomplete="off">
+                    <input type="hidden" name="csrf_token" value="<?= htmlentities($_SESSION['csrf_token']) ?>">
+
+                    <div class="input-group mb-3">
+                        <input type="password" class="form-control" name="pin"
+                               placeholder="Vault PIN" required <?= $has_prf ? '' : 'autofocus' ?>
+                               inputmode="text" minlength="<?= VAULT_PIN_MIN_LENGTH ?>">
+                        <div class="input-group-append">
+                            <div class="input-group-text"><i class="fas fa-key"></i></div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn <?= $has_prf ? 'btn-outline-secondary' : 'btn-primary' ?> btn-block mb-3">
+                        <i class="fa fa-unlock mr-2"></i>Unlock with PIN
+                    </button>
+                </form>
+
+                <p class="small text-muted mb-0">
+                    After <?= VAULT_LOCKOUT_THRESHOLD ?> failed PIN attempts the method is locked for <?= VAULT_LOCKOUT_MINUTES ?> minutes.
+                </p>
+            <?php endif; ?>
 
             <hr class="my-3">
 
             <p class="small mb-0">
-                Don't have a PIN yet? Sign in with your account password to set one up.
-                &middot; <a href="/post.php?logout">Log out</a>
+                <?php if (!$has_pin): ?>
+                    No PIN fallback configured. Add one via My Account → Security after signing in with password.<br>
+                <?php endif; ?>
+                <a href="/post.php?logout">Log out</a>
             </p>
         </div>
     </div>

@@ -222,7 +222,34 @@ try {
         <?php endif; ?>
 
         <hr>
-        <h5>Set or update vault PIN</h5>
+        <h5>Add a hardware unlock <span class="badge badge-success">faster</span></h5>
+        <p class="small text-muted">
+            Register a security key (YubiKey, Touch ID, Windows Hello, platform passkey) for one-tap vault unlock after SSO. Requires WebAuthn PRF support — most authenticators released since 2023 work.
+        </p>
+
+        <?php if (!$vault_master_key_present): ?>
+            <div class="alert alert-warning small">
+                Vault is locked. Sign in with your account password (or unlock with PIN first) to enrol a hardware unlock method.
+            </div>
+        <?php else: ?>
+            <input type="hidden" id="vault_prf_csrf" value="<?= $_SESSION['csrf_token'] ?>">
+            <div class="form-group">
+                <label>Label <small class="text-muted">(optional)</small></label>
+                <input type="text" id="vault_prf_label" class="form-control" maxlength="100"
+                       placeholder="e.g. YubiKey blue, Touch ID Macbook">
+            </div>
+            <button type="button" id="vault_prf_enroll_btn" class="btn btn-primary">
+                <i class="fas fa-fingerprint mr-2"></i>Add hardware unlock
+            </button>
+            <div id="vault_prf_enroll_status" class="mt-2 small"></div>
+            <script src="/plugins/webauthn/vault-prf-enroll.js"></script>
+        <?php endif; ?>
+
+        <hr>
+        <h5>Vault PIN <small class="text-muted">(recovery fallback)</small></h5>
+        <p class="small text-muted">
+            Recommended as a backup so you don't lose vault access if your security key is lost or unavailable.
+        </p>
 
         <?php if (!$vault_master_key_present): ?>
             <div class="alert alert-warning small">

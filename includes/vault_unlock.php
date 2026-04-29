@@ -113,6 +113,137 @@ function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, #[
     return intval(mysqli_insert_id($mysqli));
 }
 
+/**
+ * Derive a 32-byte AES-256-GCM key from a WebAuthn PRF output.
+ *
+ * The PRF output is already 32 bytes of high-entropy hardware-bound material;
+ * we HKDF-expand it with a domain label so the same authenticator + salt can
+ * never collide with other use cases of the same PRF output.
+ */
+function vaultDeriveKekFromPrf(#[\SensitiveParameter] string $prf_output): string
+{
+    if (strlen($prf_output) !== 32) {
+        throw new RuntimeException('vaultDeriveKekFromPrf: PRF output must be 32 bytes');
+    }
+    return hash_hkdf('sha256', $prf_output, 32, 'itflow-vault-prf-v1');
+}
+
+/**
+ * Wrap the master key under a PRF-derived KEK and store as a webauthn_prf method.
+ * Caller is responsible for providing the credential_id, public_key_pem, sign_count,
+ * cose_alg and prf_salt produced by the WebAuthn registration ceremony.
+ */
+function vaultStorePrfMethod(
+    int $user_id,
+    #[\SensitiveParameter] string $master_key,
+    #[\SensitiveParameter] string $prf_output,
+    string $credential_id_b64,
+    string $public_key_pem,
+    int $cose_alg,
+    int $sign_count,
+    string $prf_salt_raw,
+    string $label,
+    mysqli $mysqli
+): int {
+    if (strlen($prf_salt_raw) !== 32) {
+        throw new RuntimeException('vaultStorePrfMethod: prf_salt must be 32 bytes');
+    }
+
+    $kek     = vaultDeriveKekFromPrf($prf_output);
+    $wrapped = cryptoEncryptV2($master_key, $kek);
+    sodium_memzero($kek);
+
+    $wrapped_b64  = base64_encode($wrapped);
+    $prf_salt_b64 = base64_encode($prf_salt_raw);
+    $label = $label !== '' ? substr($label, 0, 100) : 'Hardware unlock';
+
+    $stmt = mysqli_prepare($mysqli, "
+        INSERT INTO user_vault_unlock_methods
+        (user_id, method_type, label, salt, wrapped_master_key,
+         credential_id, public_key, sign_count, prf_salt, created_at)
+        VALUES (?, 'webauthn_prf', ?, '', ?, ?, ?, ?, ?, NOW())
+    ");
+    if (!$stmt) {
+        throw new RuntimeException('vaultStorePrfMethod: prepare failed');
+    }
+    // positions:  user_id, label, wrapped, cred_id, pubkey, sign_count, prf_salt
+    //             i        s      s        s        s       i           s
+    mysqli_stmt_bind_param(
+        $stmt,
+        'issssis',
+        $user_id, $label, $wrapped_b64, $credential_id_b64, $public_key_pem, $sign_count, $prf_salt_b64
+    );
+    mysqli_stmt_execute($stmt);
+    $insert_id = mysqli_insert_id($mysqli);
+    mysqli_stmt_close($stmt);
+    return intval($insert_id);
+}
+
+/**
+ * Look up a PRF method by credential id (base64url) and user id.
+ */
+function vaultFindPrfMethodByCredentialId(int $user_id, string $credential_id_b64, mysqli $mysqli): ?array
+{
+    $cred_e  = mysqli_real_escape_string($mysqli, $credential_id_b64);
+    $user_id = intval($user_id);
+    $row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT method_id, label, wrapped_master_key, credential_id,
+                public_key, sign_count, prf_salt,
+                failed_attempts, locked_until
+         FROM user_vault_unlock_methods
+         WHERE user_id = $user_id
+           AND method_type = 'webauthn_prf'
+           AND credential_id = '$cred_e'
+         LIMIT 1"
+    ));
+    return $row ?: null;
+}
+
+/**
+ * Unlock the vault using a PRF output (after the assertion has been verified).
+ * Returns the master key on success, or null on tag mismatch.
+ */
+function vaultTryUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $prf_output, mysqli $mysqli): ?string
+{
+    $method_id = intval($method_id);
+    $row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT wrapped_master_key, failed_attempts, locked_until
+         FROM user_vault_unlock_methods
+         WHERE method_id = $method_id AND method_type = 'webauthn_prf'
+         LIMIT 1"
+    ));
+    if (!$row || vaultIsLocked($row)) {
+        return null;
+    }
+    $wrapped = base64_decode($row['wrapped_master_key'], true);
+    if ($wrapped === false) {
+        return null;
+    }
+    try {
+        $kek    = vaultDeriveKekFromPrf($prf_output);
+        $master = cryptoDecryptV2($wrapped, $kek);
+        sodium_memzero($kek);
+    } catch (Throwable $e) {
+        $new_attempts = intval($row['failed_attempts']) + 1;
+        if ($new_attempts >= VAULT_LOCKOUT_THRESHOLD) {
+            mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
+                SET failed_attempts = $new_attempts,
+                    locked_until = DATE_ADD(NOW(), INTERVAL " . VAULT_LOCKOUT_MINUTES . " MINUTE)
+                WHERE method_id = $method_id");
+        } else {
+            mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
+                SET failed_attempts = $new_attempts WHERE method_id = $method_id");
+        }
+        return null;
+    }
+    mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
+        SET failed_attempts = 0, locked_until = NULL, last_used_at = NOW()
+        WHERE method_id = $method_id");
+    return $master;
+}
+
 function vaultDeleteMethod(int $method_id, int $user_id, mysqli $mysqli): bool
 {
     $method_id = intval($method_id);
