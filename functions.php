@@ -377,16 +377,43 @@ function mkdirMissing($dir) {
 // Called during initial setup
 // Encrypts the master key with the user's password
 function setupFirstUserSpecificKey($user_password, $site_encryption_master_key) {
-    $iv = randomString();
-    $salt = randomString();
+    if (!is_string($site_encryption_master_key) || strlen($site_encryption_master_key) !== 16) {
+        throw new RuntimeException(
+            'setupFirstUserSpecificKey: site_encryption_master_key must be exactly 16 bytes, got '
+            . (is_string($site_encryption_master_key) ? strlen($site_encryption_master_key) : gettype($site_encryption_master_key))
+        );
+    }
+
+    // Use random_bytes(16) directly so the IV/salt sizes are guaranteed,
+    // independent of randomString()'s default-length contract.
+    $iv   = random_bytes(16);
+    $salt = random_bytes(16);
 
     //Generate 128-bit (16 byte/char) kdhash of the users password
     $user_password_kdhash = hash_pbkdf2('sha256', $user_password, $salt, 100000, 16);
 
     //Encrypt the master key with the users kdf'd hash and the IV
     $ciphertext = openssl_encrypt($site_encryption_master_key, 'aes-128-cbc', $user_password_kdhash, 0, $iv);
+    if ($ciphertext === false) {
+        throw new RuntimeException('setupFirstUserSpecificKey: openssl_encrypt failed');
+    }
 
-    return $salt . $iv . $ciphertext;
+    $wrapped = $salt . $iv . $ciphertext;
+
+    // Self-verify the round-trip before returning. If anything went sideways
+    // (truncated IV, libsodium glitch, etc.) we catch it here instead of
+    // writing garbage to the database.
+    $verify = openssl_decrypt(
+        substr($wrapped, 32), 'aes-128-cbc',
+        hash_pbkdf2('sha256', $user_password, substr($wrapped, 0, 16), 100000, 16),
+        0,
+        substr($wrapped, 16, 16)
+    );
+    if ($verify !== $site_encryption_master_key) {
+        throw new RuntimeException('setupFirstUserSpecificKey: round-trip self-verify failed; refusing to return malformed wrapping');
+    }
+
+    return $wrapped;
 }
 
 /*
@@ -395,30 +422,67 @@ function setupFirstUserSpecificKey($user_password, $site_encryption_master_key) 
  * Password Changes: Will use the current info in the session.
 */
 function encryptUserSpecificKey($user_password) {
-    $iv = randomString();
-    $salt = randomString();
-
     // Get the session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'];
-    $user_encryption_session_iv = $_SESSION['user_encryption_session_iv'];
-    $user_encryption_session_key = $_COOKIE['user_encryption_session_key'];
+    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
+    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
+    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
+
+    if (empty($user_encryption_session_ciphertext) || empty($user_encryption_session_iv) || empty($user_encryption_session_key)) {
+        throw new RuntimeException('encryptUserSpecificKey: vault is locked (no session encryption material)');
+    }
 
     // Decrypt the session key to get the master key
     $site_encryption_master_key = openssl_decrypt($user_encryption_session_ciphertext, 'aes-128-cbc', $user_encryption_session_key, 0, $user_encryption_session_iv);
+    if ($site_encryption_master_key === false || strlen($site_encryption_master_key) !== 16) {
+        throw new RuntimeException('encryptUserSpecificKey: could not retrieve a valid master key from session');
+    }
+
+    $iv   = random_bytes(16);
+    $salt = random_bytes(16);
 
     // Generate 128-bit (16 byte/char) kdhash of the users (new) password
     $user_password_kdhash = hash_pbkdf2('sha256', $user_password, $salt, 100000, 16);
 
     // Encrypt the master key with the users kdf'd hash and the IV
     $ciphertext = openssl_encrypt($site_encryption_master_key, 'aes-128-cbc', $user_password_kdhash, 0, $iv);
+    if ($ciphertext === false) {
+        throw new RuntimeException('encryptUserSpecificKey: openssl_encrypt failed');
+    }
 
-    return $salt . $iv . $ciphertext;
+    $wrapped = $salt . $iv . $ciphertext;
+
+    // Self-verify the round-trip; refuse to return a malformed wrapping.
+    $verify = openssl_decrypt(
+        substr($wrapped, 32), 'aes-128-cbc',
+        hash_pbkdf2('sha256', $user_password, substr($wrapped, 0, 16), 100000, 16),
+        0,
+        substr($wrapped, 16, 16)
+    );
+    if ($verify !== $site_encryption_master_key) {
+        throw new RuntimeException('encryptUserSpecificKey: round-trip self-verify failed; refusing to return malformed wrapping');
+    }
+
+    return $wrapped;
 }
 
 // Given a ciphertext (incl. IV) and the user's (or API key) password, returns the site master key
 // Ran at login, to facilitate generateUserSessionKey
 function decryptUserSpecificKey($user_encryption_ciphertext, $user_password)
 {
+    // Detect malformed wrappings early. Historically, some hand-rolled setup
+    // commands captured PHP warning text into this column (the "IV passed
+    // is 32 bytes long..." pattern), which then silently failed every login
+    // with no signal beyond a locked vault. Catch obvious garbage here.
+    if (!is_string($user_encryption_ciphertext) || strlen($user_encryption_ciphertext) < 33) {
+        error_log('decryptUserSpecificKey: wrapping is too short or non-string; vault cannot be unlocked');
+        return false;
+    }
+    if (str_starts_with(ltrim($user_encryption_ciphertext), 'Warning:')
+        || str_starts_with(ltrim($user_encryption_ciphertext), 'Notice:')) {
+        error_log('decryptUserSpecificKey: wrapping starts with a PHP warning/notice — column was corrupted at write time. Use scripts/reset_master_key.php to recover.');
+        return false;
+    }
+
     //Get the IV, salt and ciphertext
     $salt = substr($user_encryption_ciphertext, 0, 16);
     $iv = substr($user_encryption_ciphertext, 16, 16);
@@ -428,7 +492,11 @@ function decryptUserSpecificKey($user_encryption_ciphertext, $user_password)
     $user_password_kdhash = hash_pbkdf2('sha256', $user_password, $salt, 100000, 16);
 
     //Use this hash to get the original/master key
-    return openssl_decrypt($ciphertext, 'aes-128-cbc', $user_password_kdhash, 0, $iv);
+    $pt = openssl_decrypt($ciphertext, 'aes-128-cbc', $user_password_kdhash, 0, $iv);
+    if ($pt === false) {
+        error_log('decryptUserSpecificKey: openssl_decrypt failed — wrong password, or v1 wrapping is corrupt. Use scripts/reset_master_key.php to recover.');
+    }
+    return $pt;
 }
 
 /*
@@ -668,6 +736,8 @@ function decryptUserSpecificKeyV2(string $stored, #[\SensitiveParameter] string 
 
 function unlockUserMasterKey(array $user_row, #[\SensitiveParameter] string $password, mysqli $mysqli): ?string
 {
+    $user_id = intval($user_row['user_id'] ?? 0);
+
     // Prefer v2 if present; fail closed if v2 fails (don't silently regress to v1).
     if (!empty($user_row['user_specific_encryption_ciphertext_v2'])) {
         try {
@@ -676,6 +746,7 @@ function unlockUserMasterKey(array $user_row, #[\SensitiveParameter] string $pas
                 $password
             );
         } catch (Throwable $e) {
+            error_log("unlockUserMasterKey: v2 unwrap failed for user_id=$user_id: " . $e->getMessage());
             return null;
         }
     }
@@ -686,10 +757,11 @@ function unlockUserMasterKey(array $user_row, #[\SensitiveParameter] string $pas
             $user_row['user_specific_encryption_ciphertext'],
             $password
         );
-        if ($master_key === false || $master_key === '') {
+        if ($master_key === false || $master_key === '' || strlen($master_key) !== 16) {
+            // decryptUserSpecificKey already logs the specific failure mode.
+            error_log("unlockUserMasterKey: v1 unwrap returned no usable master key for user_id=$user_id. The vault will stay locked. If password is correct, the v1 column is corrupt — recover with: php scripts/reset_master_key.php $user_id <password>");
             return null;
         }
-        $user_id = intval($user_row['user_id']);
         try {
             $v2 = encryptUserSpecificKeyV2($master_key, $password);
             $v2_escaped = mysqli_real_escape_string($mysqli, $v2);
@@ -705,6 +777,7 @@ function unlockUserMasterKey(array $user_row, #[\SensitiveParameter] string $pas
         return $master_key;
     }
 
+    error_log("unlockUserMasterKey: user_id=$user_id has no wrapped master key (neither v1 nor v2)");
     return null;
 }
 
