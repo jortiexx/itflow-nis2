@@ -37,6 +37,21 @@ $rs = mysqli_query(
 
 $latest_hash_hex = securityAuditLatestHash($mysqli) ?? '(no entries yet)';
 
+$cfg = mysqli_fetch_assoc(mysqli_query(
+    $mysqli,
+    "SELECT config_security_audit_retention_days FROM settings WHERE company_id = 1 LIMIT 1"
+));
+$retention_days = intval($cfg['config_security_audit_retention_days'] ?? 365);
+
+// Most recent audit.archived marker (if any) — surface to the operator so
+// they know when the chain was last pruned and can locate the archive file.
+$archived_row = mysqli_fetch_assoc(mysqli_query(
+    $mysqli,
+    "SELECT log_id, event_time, metadata FROM security_audit_log
+     WHERE event_type = 'audit.archived'
+     ORDER BY log_id DESC LIMIT 1"
+));
+
 ?>
 <div class="card card-dark">
     <div class="card-header py-3">
@@ -51,6 +66,36 @@ $latest_hash_hex = securityAuditLatestHash($mysqli) ?? '(no entries yet)';
             Pin this value externally (SIEM, cold storage, paper) at any time. Future runs of
             <code>php scripts/audit_verify.php</code> can then prove no tampering up to the
             point you recorded it.
+        </div>
+
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <form action="post.php" method="post" class="form-inline">
+                    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+                    <label class="mr-2 mb-0">Retention</label>
+                    <input type="number" min="0" max="36500" name="audit_retention_days"
+                           class="form-control form-control-sm mr-2" style="width: 100px;"
+                           value="<?= $retention_days ?>">
+                    <span class="mr-2">days</span>
+                    <button type="submit" name="save_audit_retention" class="btn btn-sm btn-primary">Save</button>
+                </form>
+                <small class="form-text text-muted">
+                    Entries older than this are archived + deleted by <code>php scripts/audit_prune.php</code>.
+                    Set to 0 to disable pruning. Default 365.
+                </small>
+            </div>
+            <div class="col-md-6">
+                <?php if ($archived_row): ?>
+                    <div class="alert alert-info small mb-0">
+                        <strong>Last prune:</strong> <?= htmlentities($archived_row['event_time']) ?> (log_id <?= intval($archived_row['log_id']) ?>)<br>
+                        <code style="font-size:11px"><?= htmlentities($archived_row['metadata']) ?></code>
+                    </div>
+                <?php else: ?>
+                    <div class="alert alert-light small mb-0">
+                        No prune has run yet. The chain currently includes every audit entry since installation.
+                    </div>
+                <?php endif; ?>
+            </div>
         </div>
 
         <form method="get" class="form-inline mb-3">
