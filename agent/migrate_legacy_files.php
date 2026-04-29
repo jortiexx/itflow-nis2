@@ -40,7 +40,7 @@ $company_logo = $brand_row['company_logo'] ?? '';
         <link rel="icon" type="image/x-icon" href="/uploads/favicon.ico">
     <?php } ?>
     <link rel="stylesheet" href="/plugins/fontawesome-free/css/all.min.css">
-    <link rel="stylesheet" href="/plugins/adminlte/adminlte.min.css">
+    <link rel="stylesheet" href="/plugins/adminlte/css/adminlte.min.css">
     <style>
         body { background: #f4f6f9; }
         .migrate-card { max-width: 640px; margin: 8vh auto; }
