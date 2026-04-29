@@ -33,15 +33,27 @@ if (!function_exists('securityAuditCanonicalize')) {
      */
     function securityAuditCanonicalize(array $entry): string
     {
+        // Force types explicitly so the canonical form is identical regardless
+        // of where the row comes from. mysqli returns all column values as
+        // strings by default, while the writer side has ints (user_id,
+        // target_id). Without coercion JSON output differs ("1" vs 1) and
+        // the hash chain falsely reports tampering on every entry.
+        $coerce_int = static function ($v): ?int {
+            return ($v === null || $v === '') ? null : (int)$v;
+        };
+        $coerce_str = static function ($v): ?string {
+            return ($v === null) ? null : (string)$v;
+        };
+
         $ordered = [
-            'event_time'  => $entry['event_time']  ?? null,
-            'event_type'  => $entry['event_type']  ?? null,
-            'user_id'     => $entry['user_id']     ?? null,
-            'target_type' => $entry['target_type'] ?? null,
-            'target_id'   => $entry['target_id']   ?? null,
-            'source_ip'   => $entry['source_ip']   ?? null,
-            'user_agent'  => $entry['user_agent']  ?? null,
-            'metadata'    => $entry['metadata']    ?? null,
+            'event_time'  => $coerce_str($entry['event_time']  ?? null),
+            'event_type'  => $coerce_str($entry['event_type']  ?? null),
+            'user_id'     => $coerce_int($entry['user_id']     ?? null),
+            'target_type' => $coerce_str($entry['target_type'] ?? null),
+            'target_id'   => $coerce_int($entry['target_id']   ?? null),
+            'source_ip'   => $coerce_str($entry['source_ip']   ?? null),
+            'user_agent'  => $coerce_str($entry['user_agent']  ?? null),
+            'metadata'    => $coerce_str($entry['metadata']    ?? null),
         ];
         return json_encode($ordered, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
