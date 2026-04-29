@@ -8,6 +8,7 @@
 > - [`SECURITY.md`](SECURITY.md) — threat model, supported versions, disclosure
 > - [`docs/architecture.md`](docs/architecture.md) — identity → vault → credential layering
 > - [`docs/crypto-policy.md`](docs/crypto-policy.md) — approved algorithms, key lifecycle (NIS2 Art. 21(2)(h))
+> - [`docs/entra-app-registration.md`](docs/entra-app-registration.md) — scripted Entra ID app registration via PowerShell + Az CLI
 > - [`RELEASE_NOTES.md`](RELEASE_NOTES.md) — phase-by-phase changes
 >
 > **Switch a server from upstream to this fork:**
