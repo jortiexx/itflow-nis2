@@ -2009,6 +2009,23 @@ CREATE TABLE `security_audit_log` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `client_master_keys` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `client_master_keys`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `client_master_keys` (
+  `client_id` int(11) NOT NULL,
+  `wrapped_under_shared` varchar(512) NOT NULL,
+  `key_version` int(11) NOT NULL DEFAULT 1,
+  `created_at` datetime NOT NULL,
+  `rotated_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`client_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `pending_vault_enrolments` (NIS2 fork)
 --
 

@@ -12,11 +12,12 @@ if (isset($_POST['add_credential'])) {
 
     enforceUserPermission('module_credential', 2);
 
-    require_once 'credential_model.php';
-
+    // Set client_id BEFORE the model so the encrypt helpers can route to
+    // the per-client master key (phase 9).
     $client_id = intval($_POST['client_id']);
-
     enforceClientAccess();
+
+    require_once 'credential_model.php';
 
     mysqli_query($mysqli,"INSERT INTO credentials SET credential_name = '$name', credential_description = '$description', credential_uri = '$uri', credential_uri_2 = '$uri_2', credential_username = '$username', credential_password = '$password', credential_otp_secret = '$otp_secret', credential_note = '$note', credential_favorite = $favorite, credential_contact_id = $contact_id, credential_asset_id = $asset_id, credential_client_id = $client_id");
 
@@ -44,17 +45,17 @@ if (isset($_POST['edit_credential'])) {
 
     enforceUserPermission('module_credential', 2);
 
-    require_once 'credential_model.php';
-
+    // Set client_id BEFORE the model so the encrypt helpers can route to
+    // the per-client master key (phase 9).
     $credential_id = intval($_POST['credential_id']);
-
     $client_id = intval(getFieldById('credentials', $credential_id, 'credential_client_id'));
-
     enforceClientAccess();
 
+    require_once 'credential_model.php';
+
     // Determine if the password has actually changed (salt is rotated on all updates, so have to dencrypt both and compare)
-    $current_password = decryptCredentialEntry(mysqli_fetch_row(mysqli_query($mysqli, "SELECT credential_password FROM credentials WHERE credential_id = $credential_id"))[0]); // Get current credential password
-    $new_password = decryptCredentialEntry($password); // Get the new password being set (already encrypted by the credential model)
+    $current_password = decryptCredentialEntry(mysqli_fetch_row(mysqli_query($mysqli, "SELECT credential_password FROM credentials WHERE credential_id = $credential_id"))[0], $client_id); // Get current credential password
+    $new_password = decryptCredentialEntry($password, $client_id); // Get the new password being set (already encrypted by the credential model)
     if ($current_password !== $new_password) {
         // The password has been changed - update the DB to track
         mysqli_query($mysqli, "UPDATE credentials SET credential_password_changed_at = NOW() WHERE credential_id = $credential_id");
@@ -447,8 +448,8 @@ if (isset($_POST['export_credentials_csv'])) {
 
         //output each row of the data, format line as csv and write to file pointer
         while($row = mysqli_fetch_assoc($sql)){
-            $credential_username = decryptCredentialEntry($row['credential_username']);
-            $credential_password = decryptCredentialEntry($row['credential_password']);
+            $credential_username = decryptCredentialEntry($row['credential_username'], $row['credential_client_id']);
+            $credential_password = decryptCredentialEntry($row['credential_password'], $row['credential_client_id']);
             $lineData = array($row['credential_name'], $row['credential_description'], $credential_username, $credential_password, $row['credential_otp_secret'], $row['credential_uri']);
             fputcsv($f, $lineData, $delimiter, $enclosure, $escape);
         }
@@ -532,11 +533,11 @@ if (isset($_POST["import_credentials_csv"])) {
             }
             // User
             if (isset($column[2])) {
-                $username = sanitizeInput(encryptCredentialEntry($column[2]));
+                $username = sanitizeInput(encryptCredentialEntry($column[2], $client_id));
             }
             // Pass
             if (isset($column[3])) {
-                $password = sanitizeInput(encryptCredentialEntry($column[3]));
+                $password = sanitizeInput(encryptCredentialEntry($column[3], $client_id));
             }
             // OTP
             if (isset($column[4])) {

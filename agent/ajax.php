@@ -203,12 +203,12 @@ if (isset($_GET['share_generate_link'])) {
         // Decrypt & re-encrypt username/password for sharing
         $credential_encryption_key = randomString();
 
-        $credential_username_cleartext = decryptCredentialEntry($row['credential_username']);
+        $credential_username_cleartext = decryptCredentialEntry($row['credential_username'], $row['credential_client_id']);
         $iv = randomString();
         $username_ciphertext = openssl_encrypt($credential_username_cleartext, 'aes-128-cbc', $credential_encryption_key, 0, $iv);
         $item_encrypted_username = $iv . $username_ciphertext;
 
-        $credential_password_cleartext = decryptCredentialEntry($row['credential_password']);
+        $credential_password_cleartext = decryptCredentialEntry($row['credential_password'], $row['credential_client_id']);
         $iv = randomString();
         $password_ciphertext = openssl_encrypt($credential_password_cleartext, 'aes-128-cbc', $credential_encryption_key, 0, $iv);
         $item_encrypted_credential = $iv . $password_ciphertext;

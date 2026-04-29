@@ -543,14 +543,14 @@ ob_start();
                                 $credential_uri = nullable_htmlentities($row['credential_uri']);
                                 $credential_uri_display = empty($credential_uri) ? "-" : $credential_uri;
 
-                                $credential_username = nullable_htmlentities(decryptCredentialEntry($row['credential_username']));
+                                $credential_username = nullable_htmlentities(decryptCredentialEntry($row['credential_username'], $row['credential_client_id']));
                                 if (empty($credential_username)) {
                                     $credential_username_display = "-";
                                 } else {
                                     $credential_username_display = "$credential_username <button type='button' class='btn btn-sm clipboardjs' data-clipboard-text='$credential_username'><i class='far fa-copy text-secondary'></i></button>";
                                 }
 
-                                $credential_password = nullable_htmlentities(decryptCredentialEntry($row['credential_password']));
+                                $credential_password = nullable_htmlentities(decryptCredentialEntry($row['credential_password'], $row['credential_client_id']));
 
                                 $credential_otp_secret = nullable_htmlentities($row['credential_otp_secret']);
                                 if (empty($credential_otp_secret)) {

@@ -2,7 +2,78 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 8: Operationalisation
+## Unreleased — Phase 9: Per-client master keys
+
+Each client now has its own master key. New credentials are encrypted under the client's key (v3 ciphertext format), wrapped under the existing shared master key. This enables per-client key rotation, per-client secure delete (destroy a client's key → all their credentials become unrecoverable), and forensic separation in incident notifications.
+
+### What this is, and what it isn't
+
+**What it is:**
+- Each `clients` row gets a unique 16-byte master key (lazy-created on first credential write for that client)
+- New credentials use the v3 format: `"v3:" || base64(AES-256-GCM(plaintext, HKDF(client_master_key)))`
+- The client's master key is stored wrapped under the shared session master key in `client_master_keys.wrapped_under_shared`
+- Read paths transparently handle v1, v2 (shared), and v3 (per-client) ciphertexts
+- Old credentials remain readable in their existing format and are migrated to v3 on the next save
+
+**What it isn't (yet):**
+This phase does NOT achieve full cryptographic compartmentalisation against a malicious user. All client keys are wrapped under the same shared session master key, so a user with vault access can technically unwrap any client's key. Full compartmentalisation requires per-user keypairs (Bitwarden-style) and is reserved for a future phase. The wins this phase delivers are:
+- **Per-client rotation** — re-key one client without touching others
+- **Per-client secure delete** — drop a client's key in `client_master_keys` and that client's credentials become unrecoverable, even if the encrypted data remains in backups
+- **Forensic separation** — for Article 23 incident notification, the encryption boundary aligns with the application boundary
+- **Architecture readiness** — the schema and helpers are in place for phase 10+ (per-user keypairs)
+
+### Schema migration `2.4.4.6 → 2.4.4.7`
+- New table `client_master_keys` (one row per client, FK to `clients` with `ON DELETE CASCADE`)
+
+### Added
+- `functions.php`:
+  - `ensureClientMasterKey($client_id, $mysqli)` — read or lazy-create a client's master key. Requires the session master key (vault unlocked).
+  - `encryptCredentialEntryV3()` / `decryptCredentialEntryV3()` — v3 wrap/unwrap.
+  - `isCredentialV3()` detector.
+  - `decryptCredentialEntry()` and `encryptCredentialEntry()` extended with optional `$client_id` parameter. v3 ciphertexts require it; v1/v2 ignore it.
+  - `apiDecryptCredentialEntry()` / `apiEncryptCredentialEntry()` extended with `$client_id` for the API path; lazy-creates client keys directly without going through the session.
+- `scripts/client_master_key_self_test.php` — 13 offline tests covering wrap/unwrap, v3 round-trip, cross-client decrypt failure, prefix detection, tamper detection.
+
+### Changed
+- All credential read sites now pass `$row['credential_client_id']`:
+  - `agent/credentials.php`, `agent/global_search.php`, `agent/contact_details.php`, `agent/client_overview.php`, `agent/asset_details.php`, `agent/ajax.php`
+  - `agent/modals/credential/credential_edit.php`, `agent/modals/contact/contact_details.php`, `agent/modals/asset/asset_details.php`
+  - `agent/post/credential.php` (compare-old-and-new path), `agent/post/client.php` (export path)
+  - `api/v1/credentials/read.php`
+- All credential write sites now pass `$client_id`:
+  - `agent/post/credential_model.php` (using `$client_id` from parent scope)
+  - `agent/post/credential.php` (CSV import path)
+  - `agent/post/asset.php` (asset-bound credential)
+  - `api/v1/credentials/credential_model.php`
+- `agent/post/credential.php` reordered so `$client_id` is set BEFORE `require_once 'credential_model.php'` (the model now uses it).
+
+### Operator action required
+- Run database migration: `Admin → Update → Update Database` or `php scripts/update_cli.php --update_db`.
+- No manual data migration. Existing credentials stay v1/v2 and are upgraded to v3 on next save (lazy migration, same pattern as Phase 1).
+- New credentials and any save of an existing credential auto-create the client's master key on first use.
+
+### Verifying the migration ran
+```sql
+SELECT c.client_id, c.client_name,
+       CASE WHEN cmk.client_id IS NULL THEN 'no key yet'
+            ELSE 'created ' END AS status,
+       cmk.created_at, cmk.key_version
+FROM clients c
+LEFT JOIN client_master_keys cmk ON cmk.client_id = c.client_id
+WHERE c.client_archived_at IS NULL;
+```
+
+A client with no row in `client_master_keys` simply has not had a credential saved since the migration. Save any credential for that client and the key materialises.
+
+### Known limitations
+- No cryptographic compartmentalisation against a malicious user (deferred to phase 10).
+- Per-client key rotation tooling is not shipped here (you'd `DELETE FROM client_master_keys WHERE client_id = X`, save all that client's credentials again, repeat). Phase 10+ may add a CLI rotation script.
+- Per-client secure-delete is functional today: `DELETE FROM client_master_keys WHERE client_id = X` permanently removes the unwrap path. Existing v3 ciphertexts for that client are no longer decryptable. Document this in your data-retention procedures.
+
+### Cumulative self-tests
+83 / 0 failures across crypto (20), Entra SSO (11), vault PIN (5), vault PRF (7), vault enrolment (6), audit log (6), WebAuthn (15), client master keys (13).
+
+## v0.9.0-nis2-ops — Phase 8: Operationalisation
 
 Four NIS2-relevant operational improvements bundled. Each is independently small but together they close visible gaps from the post-phase-7 NIS2 review.
 

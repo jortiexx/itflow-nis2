@@ -527,14 +527,42 @@ function generateUserSessionKey($site_encryption_master_key)
     }
 }
 
-// Decrypts an encrypted password (website/asset credentials), returns it as a string
-// Reads both v2 ("v2:..." prefix, AES-256-GCM) and legacy v1 (AES-128-CBC).
-function decryptCredentialEntry($credential_password_ciphertext)
+// Decrypts an encrypted password (website/asset credentials), returns it as a string.
+// Reads v3 ("v3:..." prefix, per-client AES-256-GCM), v2 ("v2:..." shared AES-256-GCM)
+// and legacy v1 (AES-128-CBC).
+//
+// $client_id is optional and only required for v3 ciphertexts. Callers that have
+// the credential row should pass $row['credential_client_id']; older call sites
+// without that context will still read v1/v2 correctly.
+function decryptCredentialEntry($credential_password_ciphertext, $client_id = null)
 {
+    global $mysqli;
+
+    // v3 path: per-client master key
+    if (isCredentialV3($credential_password_ciphertext)) {
+        if (!$client_id) {
+            error_log('decryptCredentialEntry: v3 ciphertext without client_id');
+            return false;
+        }
+        $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+        if ($client_master === null) {
+            return false;
+        }
+        try {
+            return decryptCredentialEntryV3($credential_password_ciphertext, $client_master);
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
     // Get the user session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'];
-    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv'];
-    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key'];
+    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
+    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
+    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
+
+    if (!$user_encryption_session_ciphertext || !$user_encryption_session_iv || !$user_encryption_session_key) {
+        return false;
+    }
 
     // Decrypt the session key to get the master key (still AES-128-CBC at session layer)
     $site_encryption_master_key = openssl_decrypt(
@@ -564,14 +592,32 @@ function decryptCredentialEntry($credential_password_ciphertext)
     );
 }
 
-// Encrypts a website/asset credential password
-// Always writes v2 (AES-256-GCM with HKDF-expanded master key)
-function encryptCredentialEntry($credential_password_cleartext)
+// Encrypts a website/asset credential password.
+// When $client_id is provided, uses the per-client master key (v3 format).
+// Otherwise falls back to the shared master key (v2 format) for backward
+// compatibility with callers that do not yet pass client context.
+function encryptCredentialEntry($credential_password_cleartext, $client_id = null)
 {
+    global $mysqli;
+
+    // v3 path: per-client master key (lazy-creates the key on first use)
+    if ($client_id && intval($client_id) > 0) {
+        $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+        if ($client_master !== null) {
+            return encryptCredentialEntryV3($credential_password_cleartext, $client_master);
+        }
+        // Fall through to v2 if the per-client key could not be obtained
+        // (e.g. vault locked). Better to write v2 than to lose the value.
+    }
+
     // Get the user session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'];
-    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv'];
-    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key'];
+    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
+    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
+    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
+
+    if (!$user_encryption_session_ciphertext || !$user_encryption_session_iv || !$user_encryption_session_key) {
+        return false;
+    }
 
     $site_encryption_master_key = openssl_decrypt(
         $user_encryption_session_ciphertext, 'aes-128-cbc',
@@ -641,13 +687,12 @@ function apiUnlockMasterKey(array $api_key_row, #[\SensitiveParameter] string $p
     return null;
 }
 
-function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password)
+function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password, $client_id = null)
 {
     global $mysqli;
 
     // Backward-compatible signature: callers may pass either the api_keys row
-    // (preferred — enables v2 wrapping + lazy migration) or just the legacy
-    // api_key_decrypt_hash string. Detect and dispatch.
+    // (preferred) or just the legacy api_key_decrypt_hash string. Detect.
     if (is_array($api_key_row_or_legacy_hash)) {
         $site_encryption_master_key = apiUnlockMasterKey(
             $api_key_row_or_legacy_hash, $api_key_decrypt_password, $mysqli
@@ -663,6 +708,25 @@ function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legac
 
     if ($site_encryption_master_key === null) {
         return false;
+    }
+
+    // v3 path: per-client master key. The API path needs to fetch the
+    // client_master_keys row directly (no session) and unwrap with the
+    // shared master key just decrypted from the API key wrapping.
+    if (isCredentialV3($credential_ciphertext)) {
+        if (!$client_id) return false;
+        $cid = intval($client_id);
+        $cmk_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT wrapped_under_shared FROM client_master_keys WHERE client_id = $cid LIMIT 1"));
+        if (!$cmk_row) return false;
+        try {
+            $kek = expandMasterKeyToAes256($site_encryption_master_key);
+            $client_master = cryptoDecryptV2(base64_decode($cmk_row['wrapped_under_shared'], true), $kek);
+            sodium_memzero($kek);
+            return decryptCredentialEntryV3($credential_ciphertext, $client_master);
+        } catch (Throwable $e) {
+            return false;
+        }
     }
 
     // v2 path
@@ -683,7 +747,7 @@ function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legac
     );
 }
 
-function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password)
+function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password, $client_id = null)
 {
     global $mysqli;
 
@@ -702,6 +766,34 @@ function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, 
 
     if ($site_encryption_master_key === null) {
         return false;
+    }
+
+    // v3 path: when client_id is given, use the per-client key.
+    if ($client_id && intval($client_id) > 0) {
+        $cid = intval($client_id);
+        // Look up or create the client master key. The API path can't use
+        // ensureClientMasterKey() (it expects vaultMasterKeyFromSession).
+        $cmk_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT wrapped_under_shared FROM client_master_keys WHERE client_id = $cid LIMIT 1"));
+        $kek = expandMasterKeyToAes256($site_encryption_master_key);
+        try {
+            if ($cmk_row) {
+                $client_master = cryptoDecryptV2(base64_decode($cmk_row['wrapped_under_shared'], true), $kek);
+            } else {
+                // Lazy-create
+                $client_master = random_bytes(16);
+                $wrapped = cryptoEncryptV2($client_master, $kek);
+                $wrapped_e = mysqli_real_escape_string($mysqli, base64_encode($wrapped));
+                mysqli_query($mysqli, "INSERT INTO client_master_keys
+                    SET client_id = $cid, wrapped_under_shared = '$wrapped_e',
+                        key_version = 1, created_at = NOW()");
+            }
+            sodium_memzero($kek);
+            return encryptCredentialEntryV3($credential_cleartext, $client_master);
+        } catch (Throwable $e) {
+            error_log('apiEncryptCredentialEntry v3 path failed: ' . $e->getMessage());
+            // Fall through to v2 below
+        }
     }
 
     return encryptCredentialEntryV2($credential_cleartext, $site_encryption_master_key);
@@ -880,6 +972,119 @@ function decryptCredentialEntryV2(string $stored, #[\SensitiveParameter] string 
         throw new RuntimeException('decryptCredentialEntryV2: invalid base64');
     }
     $key32 = expandMasterKeyToAes256($master_key_raw);
+    try {
+        return cryptoDecryptV2($blob, $key32);
+    } finally {
+        sodium_memzero($key32);
+    }
+}
+
+// =====================================================================
+// NIS2 fork phase 9: per-client master keys (v3 credential format)
+//
+// Format of a v3 stored credential:
+//   "v3:" || base64( cryptoEncryptV2(plaintext, HKDF(client_master_key)) )
+//
+// The client_master_key is a 16-byte random secret stored in
+// client_master_keys, wrapped under the shared session master key. Each
+// client has its own key, enabling per-client rotation and secure delete.
+// =====================================================================
+
+const CREDENTIAL_V3_PREFIX = 'v3:';
+
+function isCredentialV3(string $stored): bool
+{
+    return strncmp($stored, CREDENTIAL_V3_PREFIX, strlen(CREDENTIAL_V3_PREFIX)) === 0;
+}
+
+/**
+ * Read or lazily create a client's master key.
+ *
+ * Requires the session master key (vault unlocked). Returns the raw
+ * 16-byte client master key, or null if the vault is locked or the
+ * stored row is malformed.
+ */
+function ensureClientMasterKey(int $client_id, mysqli $mysqli): ?string
+{
+    $client_id = intval($client_id);
+    if ($client_id <= 0) return null;
+
+    $session_master = vaultMasterKeyFromSession();
+    if ($session_master === null) {
+        return null;
+    }
+    $kek = expandMasterKeyToAes256($session_master);
+
+    $row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT wrapped_under_shared FROM client_master_keys
+         WHERE client_id = $client_id LIMIT 1"
+    ));
+
+    if ($row) {
+        try {
+            $wrapped = base64_decode($row['wrapped_under_shared'], true);
+            if ($wrapped === false) {
+                error_log("ensureClientMasterKey: malformed wrapping for client_id=$client_id");
+                return null;
+            }
+            $client_master = cryptoDecryptV2($wrapped, $kek);
+            sodium_memzero($kek);
+            return $client_master;
+        } catch (Throwable $e) {
+            error_log("ensureClientMasterKey: unwrap failed for client_id=$client_id: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    // Lazy-create. Generate a fresh 16-byte client master key, wrap it under
+    // the session master key, store, and return.
+    $client_master = random_bytes(16);
+    try {
+        $wrapped = cryptoEncryptV2($client_master, $kek);
+    } catch (Throwable $e) {
+        error_log("ensureClientMasterKey: wrap failed for client_id=$client_id: " . $e->getMessage());
+        return null;
+    } finally {
+        sodium_memzero($kek);
+    }
+    $wrapped_b64 = base64_encode($wrapped);
+    $wrapped_e   = mysqli_real_escape_string($mysqli, $wrapped_b64);
+
+    mysqli_query(
+        $mysqli,
+        "INSERT INTO client_master_keys
+         SET client_id = $client_id,
+             wrapped_under_shared = '$wrapped_e',
+             key_version = 1,
+             created_at = NOW()"
+    );
+
+    return $client_master;
+}
+
+function encryptCredentialEntryV3(#[\SensitiveParameter] string $plaintext, #[\SensitiveParameter] string $client_master): string
+{
+    $key32 = expandMasterKeyToAes256($client_master);
+    try {
+        $blob = cryptoEncryptV2($plaintext, $key32);
+        return CREDENTIAL_V3_PREFIX . base64_encode($blob);
+    } finally {
+        sodium_memzero($key32);
+    }
+}
+
+function decryptCredentialEntryV3(string $stored, #[\SensitiveParameter] string $client_master): string
+{
+    if (!isCredentialV3($stored)) {
+        throw new RuntimeException('decryptCredentialEntryV3: not a v3 credential');
+    }
+    $b64  = substr($stored, strlen(CREDENTIAL_V3_PREFIX));
+    $blob = base64_decode($b64, true);
+    if ($blob === false) {
+        throw new RuntimeException('decryptCredentialEntryV3: invalid base64');
+    }
+    $key32 = expandMasterKeyToAes256($client_master);
     try {
         return cryptoDecryptV2($blob, $key32);
     } finally {

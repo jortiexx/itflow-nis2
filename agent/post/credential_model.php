@@ -6,8 +6,10 @@ $name = sanitizeInput($_POST['name']);
 $description = sanitizeInput($_POST['description']);
 $uri = sanitizeInput($_POST['uri']);
 $uri_2 = sanitizeInput($_POST['uri_2']);
-$username = encryptCredentialEntry(trim($_POST['username']));
-$password = encryptCredentialEntry(trim($_POST['password']));
+// $client_id is provided by the parent script (credential.php) and routes
+// the encrypt to the per-client master key (phase 9, v3 ciphertexts).
+$username = encryptCredentialEntry(trim($_POST['username']), $client_id ?? null);
+$password = encryptCredentialEntry(trim($_POST['password']), $client_id ?? null);
 $otp_secret = sanitizeInput($_POST['otp_secret']);
 $note = sanitizeInput($_POST['note']);
 $favorite = intval($_POST['favorite'] ?? 0);

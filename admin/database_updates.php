@@ -4549,6 +4549,29 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.6'");
     }
 
+    // 2.4.4.6 -> 2.4.4.7: per-client master keys.
+    // New credentials are encrypted under a per-client AES-256-GCM key.
+    // The client key is wrapped under the same session master key path that
+    // already exists, so any user with vault access who has app-level
+    // permission to the client can unwrap it. This adds per-client rotation,
+    // per-client secure-delete, and forensic separation. It does NOT yet
+    // achieve cryptographic compartmentalisation against a malicious user
+    // (that would require per-user keypairs — phase 10+).
+    if (CURRENT_DATABASE_VERSION == '2.4.4.6') {
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `client_master_keys` (
+                `client_id` INT NOT NULL PRIMARY KEY,
+                `wrapped_under_shared` VARCHAR(512) NOT NULL,
+                `key_version` INT NOT NULL DEFAULT 1,
+                `created_at` DATETIME NOT NULL,
+                `rotated_at` DATETIME NULL DEFAULT NULL,
+                CONSTRAINT `fk_client_master_keys_client`
+                    FOREIGN KEY (`client_id`) REFERENCES `clients`(`client_id`) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+        ");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.7'");
+    }
+
 } else {
     // Up-to-date
 }
