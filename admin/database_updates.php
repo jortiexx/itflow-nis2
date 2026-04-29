@@ -4635,6 +4635,17 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.10'");
     }
 
+    // 2.4.4.10 -> 2.4.4.11: phase 15 — legacy file encryption sweep.
+    //   Phase 13 only encrypted files uploaded *after* deploy. Files that
+    //   were already on disk stayed plaintext (file_encrypted = 0). The
+    //   sweeper re-encrypts them lazily, one client at a time, after the
+    //   first vault unlock. This column tracks completion per client.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.10') {
+        mysqli_query($mysqli, "ALTER TABLE `client_master_keys`
+            ADD COLUMN `legacy_files_swept_at` DATETIME NULL DEFAULT NULL");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.11'");
+    }
+
 } else {
     // Up-to-date
 }

@@ -2,6 +2,58 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.16.0-nis2-sweeper — Phase 15: legacy file encryption sweep (auto on first login after upgrade)
+
+Closes the gap left by phase 13's lazy migration: files that were on disk **before** phase 13 was deployed stayed plaintext (`file_encrypted = 0`) — including `.pfx` keystores, `.ovpn` configs, exported credentials, and any other bearer-shaped attachment. Phase 13 only encrypted *new* uploads.
+
+### Why "auto" can't strictly mean "during the DB migration"
+
+The encryption requires the per-client master key, which is wrapped under the session-master and is only derivable when an admin's vault is unlocked. A DB migration runs in a context where no one is logged in yet — there is no session-master. So a strict "encrypt during migration" is cryptographically impossible.
+
+### What "auto" actually does
+
+Schema migration `2.4.4.10 → 2.4.4.11` adds `client_master_keys.legacy_files_swept_at` (NULLable). NULL = "this client may still have plaintext files; sweep me." NOT NULL = "fully migrated, never scan again."
+
+`includes/load_user_session.php` now calls `sweepLegacyFilesOpportunistic()` once per session per hour:
+- Looks up one client (lowest `client_id`) where `legacy_files_swept_at IS NULL` AND there are still `file_encrypted = 0` rows AND the current user has access.
+- Encrypts up to **25 files** with a hard **1-second** time budget per call.
+- Each file: `flock LOCK_EX` (race-safe vs. multiple admins logging in at once), read plaintext, AES-256-GCM encrypt with the per-client key, `ftruncate` + `fwrite` ciphertext atomically over the same file handle, `UPDATE files SET file_encrypted=1, file_encryption_iv=?, file_encryption_tag=?, file_sha256=?, file_mime_verified=COALESCE(...)`. Audits each as `file.migrate.encrypted`.
+- When a client has zero plaintext rows left, sets `legacy_files_swept_at = NOW()` and emits `file.migrate.client_complete`.
+- Failures (missing on disk, write error, DB UPDATE rejected) are logged + counted; the disk write rolls back via decrypt-with-the-just-generated-key if the SQL update failed, so the on-disk and DB state stay consistent.
+
+For a small install (a few hundred files, one admin): the entire backlog clears in a few logins. For a large install (tens of thousands of files): the work distributes across logins; ops can also force-finish via the CLI script.
+
+### CLI script (`scripts/encrypt_legacy_files.php`)
+
+For ops who want to push through the backlog in one go:
+
+```
+php scripts/encrypt_legacy_files.php           # process everything
+php scripts/encrypt_legacy_files.php --dry-run # report counts only
+php scripts/encrypt_legacy_files.php --client-id=42
+php scripts/encrypt_legacy_files.php --batch=500
+```
+
+Same primitive as the in-app sweeper. Requires the per-client master key derivable from the running shell context — typically only useful inside a vault-aware environment.
+
+### What this does NOT solve
+
+- **Existing backups** still contain the plaintext bytes. Encrypting going-forward does not retroactively scrub backup tapes / S3 versioned objects / off-site copies. Operational sanitisation of those is outside code scope.
+- **Archived files** (`file_archived_at IS NOT NULL`) are deliberately skipped — they're not in the active corpus and a future "purge archived" pass can address them.
+- **`uploads/documents/*` inline images** stay plaintext (operator-authored illustrations, not bearer material; `.htaccess` allows direct read from phase-14 hotfix).
+
+### Operator action required
+
+After deploy + first login: nothing. Just log in and use the app normally. After ~1 hour you can verify progress via:
+```sql
+SELECT COUNT(*) FROM files WHERE file_encrypted = 0 AND file_archived_at IS NULL;
+SELECT client_id, legacy_files_swept_at FROM client_master_keys ORDER BY client_id;
+SELECT COUNT(*), audit_event_type FROM security_audit_log
+ WHERE audit_event_type LIKE 'file.migrate.%' GROUP BY audit_event_type;
+```
+
+If you want to force-complete: run the CLI script.
+
 ## v0.15.1-nis2-photos — Hotfix: re-allow public branding paths
 
 Phase 14's full default-deny on `uploads/.htaccess` over-reached. Three

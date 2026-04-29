@@ -2049,6 +2049,7 @@ CREATE TABLE `client_master_keys` (
   `key_version` int(11) NOT NULL DEFAULT 1,
   `created_at` datetime NOT NULL,
   `rotated_at` datetime DEFAULT NULL,
+  `legacy_files_swept_at` datetime DEFAULT NULL,
   PRIMARY KEY (`client_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

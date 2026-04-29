@@ -63,3 +63,14 @@ $access_permission_query = "";
 if ($client_access_string && !$session_is_admin) {
     $access_permission_query = "AND clients.client_id IN ($client_access_string)";
 }
+
+// Phase 15: opportunistic legacy file encryption sweep. Cheap and
+// idempotent; a no-op if the vault is locked (no per-client master
+// derivable). Rate-limited to once per hour per session, with a 1 second
+// time budget per call. Distributes the re-encryption of pre-phase-13
+// plaintext files across logins so no single page-load is slow.
+if ((time() - intval($_SESSION['_last_legacy_sweep'] ?? 0)) > 3600) {
+    require_once __DIR__ . '/legacy_file_sweeper.php';
+    @sweepLegacyFilesOpportunistic($mysqli, $session_user_id, $session_is_admin, 1.0);
+    $_SESSION['_last_legacy_sweep'] = time();
+}
