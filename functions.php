@@ -709,9 +709,49 @@ function apiUnlockMasterKey(array $api_key_row, #[\SensitiveParameter] string $p
     return null;
 }
 
+/**
+ * Phase 11: unwrap a per-client API-key wrapping. Returns the raw
+ * client master key on success, null otherwise.
+ */
+function apiUnlockClientMasterKey(array $api_key_row, #[\SensitiveParameter] string $api_password): ?string
+{
+    if (empty($api_key_row['api_key_client_master_wrapped'])) {
+        return null;
+    }
+    $raw = base64_decode($api_key_row['api_key_client_master_wrapped'], true);
+    if ($raw === false || strlen($raw) < SODIUM_CRYPTO_PWHASH_SALTBYTES + 30) {
+        return null;
+    }
+    $salt = substr($raw, 0, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    $blob = substr($raw, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+    try {
+        $kek = deriveKekArgon2id($api_password, $salt);
+        $cm  = cryptoDecryptV2($blob, $kek);
+        sodium_memzero($kek);
+        return $cm;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
 function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password, $client_id = null)
 {
     global $mysqli;
+
+    // Phase 11: client-scoped API keys (api_key_client_id > 0) carry their
+    // own wrapping of the scoped client's master key under the API password.
+    // This path skips the shared-master entirely — a compromised client-
+    // scoped API key cannot reach any other client's data.
+    if (is_array($api_key_row_or_legacy_hash) && isCredentialV3($credential_ciphertext)) {
+        $client_master = apiUnlockClientMasterKey($api_key_row_or_legacy_hash, $api_key_decrypt_password);
+        if ($client_master !== null) {
+            try {
+                return decryptCredentialEntryV3($credential_ciphertext, $client_master);
+            } catch (Throwable $e) {
+                return false;
+            }
+        }
+    }
 
     // Backward-compatible signature: callers may pass either the api_keys row
     // (preferred) or just the legacy api_key_decrypt_hash string. Detect.
@@ -732,9 +772,8 @@ function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legac
         return false;
     }
 
-    // v3 path: per-client master key. The API path needs to fetch the
-    // client_master_keys row directly (no session) and unwrap with the
-    // shared master key just decrypted from the API key wrapping.
+    // v3 path (legacy via shared master): for global API keys (no per-key
+    // client wrapping) we still go through the shared master.
     if (isCredentialV3($credential_ciphertext)) {
         if (!$client_id) return false;
         $cid = intval($client_id);
@@ -772,6 +811,16 @@ function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legac
 function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password, $client_id = null)
 {
     global $mysqli;
+
+    // Phase 11: client-scoped API key short-circuit. If this API key carries
+    // a per-client wrapping of the scoped client's master key, encrypt
+    // directly under that — no shared master involved.
+    if (is_array($api_key_row_or_legacy_hash)) {
+        $client_master = apiUnlockClientMasterKey($api_key_row_or_legacy_hash, $api_key_decrypt_password);
+        if ($client_master !== null) {
+            return encryptCredentialEntryV3($credential_cleartext, $client_master);
+        }
+    }
 
     if (is_array($api_key_row_or_legacy_hash)) {
         $site_encryption_master_key = apiUnlockMasterKey(

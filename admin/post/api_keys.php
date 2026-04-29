@@ -28,6 +28,7 @@ if (isset($_POST['add_api_key'])) {
     // session has a usable master key (it throws otherwise). Reuse the master
     // key from the active session to wrap a fresh v2 row.
     $apikey_v2 = '';
+    $session_master_key = null;
     try {
         $session_master_key = vaultMasterKeyFromSession();
         if ($session_master_key !== null) {
@@ -38,7 +39,33 @@ if (isset($_POST['add_api_key'])) {
     }
     $apikey_v2_e = mysqli_real_escape_string($mysqli, $apikey_v2);
 
-    mysqli_query($mysqli,"INSERT INTO api_keys SET api_key_name = '$name', api_key_secret = '$secret', api_key_decrypt_hash = '$apikey_specific_encryption_ciphertext', api_key_decrypt_hash_v2 = '$apikey_v2_e', api_key_expire = '$expire', api_key_client_id = $client_id");
+    // Phase 11: for client-scoped API keys (api_key_client_id > 0), wrap THAT
+    // client's master key directly under the API password. API consumers
+    // with this row get a per-client compartmentalised path that does not
+    // route through the shared session master key — a compromised API key
+    // is bounded to its scoped client and cannot decrypt any other client's
+    // data. For global API keys (client_id = 0) this column stays NULL and
+    // they continue to use the legacy shared-master path.
+    $apikey_client_master_wrapped = '';
+    if ($client_id > 0) {
+        try {
+            $client_master = getClientMasterKeyViaGrant($client_id, $mysqli)
+                          ?? ensureClientMasterKey($client_id, $mysqli);
+            if ($client_master !== null) {
+                $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
+                $kek  = deriveKekArgon2id($apikey_password_plain, $salt);
+                $blob = cryptoEncryptV2($client_master, $kek);
+                sodium_memzero($kek);
+                sodium_memzero($client_master);
+                $apikey_client_master_wrapped = base64_encode($salt . $blob);
+            }
+        } catch (Throwable $e) {
+            error_log('API key per-client wrap failed: ' . $e->getMessage());
+        }
+    }
+    $apikey_cm_e = mysqli_real_escape_string($mysqli, $apikey_client_master_wrapped);
+
+    mysqli_query($mysqli,"INSERT INTO api_keys SET api_key_name = '$name', api_key_secret = '$secret', api_key_decrypt_hash = '$apikey_specific_encryption_ciphertext', api_key_decrypt_hash_v2 = '$apikey_v2_e', api_key_client_master_wrapped = '$apikey_cm_e', api_key_expire = '$expire', api_key_client_id = $client_id");
 
     $api_key_id = mysqli_insert_id($mysqli);
 

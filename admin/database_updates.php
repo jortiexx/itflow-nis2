@@ -4605,6 +4605,18 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.8'");
     }
 
+    // 2.4.4.8 -> 2.4.4.9: phase 11 — privkey wrapped under PIN/PRF KEK, and
+    // per-client-scoped API keys with their own client_master wrap.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.8') {
+        mysqli_query($mysqli, "ALTER TABLE `user_vault_unlock_methods`
+            ADD COLUMN `wrapped_privkey` VARCHAR(512) NULL DEFAULT NULL
+            AFTER `wrapped_master_key`");
+        mysqli_query($mysqli, "ALTER TABLE `api_keys`
+            ADD COLUMN `api_key_client_master_wrapped` VARCHAR(512) NULL DEFAULT NULL
+            AFTER `api_key_decrypt_hash_v2`");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.9'");
+    }
+
 } else {
     // Up-to-date
 }

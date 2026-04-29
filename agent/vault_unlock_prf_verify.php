@@ -130,8 +130,8 @@ try {
     exit(json_encode(['error' => 'invalid prf_output encoding']));
 }
 
-$master = vaultTryUnlockWithPrf(intval($method['method_id']), $prf_output, $mysqli);
-if ($master === null) {
+$unlock = vaultUnlockWithPrf(intval($method['method_id']), $prf_output, $mysqli);
+if ($unlock === null) {
     logAction('Vault', 'Unlock failed', "WebAuthn PRF unwrap failed for user_id=$user_id", 0, $user_id);
     securityAudit('vault.unlock.failed', [
         'user_id' => $user_id, 'metadata' => ['method' => 'webauthn_prf', 'reason' => 'unwrap'],
@@ -140,7 +140,7 @@ if ($master === null) {
     exit(json_encode(['error' => 'unable to unwrap vault with this authenticator']));
 }
 
-// Update sign_count (vaultTryUnlockWithPrf already reset failed_attempts/last_used_at).
+// Update sign_count (vaultUnlockWithPrf already reset failed_attempts/last_used_at).
 $mid = intval($method['method_id']);
 mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
     SET sign_count = $new_count
@@ -148,7 +148,10 @@ mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
 
 // Establish session encryption material.
 session_regenerate_id(true);
-generateUserSessionKey($master);
+generateUserSessionKey($unlock['master']);
+if (!empty($unlock['privkey'])) {
+    pushUserPrivkeyToSession($unlock['privkey']);
+}
 $_SESSION['vault_unlocked'] = true;
 $_SESSION['csrf_token']     = randomString(32);
 

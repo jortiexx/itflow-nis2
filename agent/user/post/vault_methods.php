@@ -29,8 +29,13 @@ if (isset($_POST['set_vault_pin'])) {
         redirect();
     }
 
+    // Phase 11: also wrap the user's privkey under the PIN KEK so SSO+PIN
+    // unlocks restore the full keypair to the session, preserving phase-10
+    // compartmentalisation. Falls back gracefully if privkey is not yet in
+    // session (pre-phase-10 user).
+    $privkey_for_pin = userPrivkeyFromSession();
     try {
-        vaultSetPin($session_user_id, $master, $pin, $label, $mysqli);
+        vaultSetPin($session_user_id, $master, $privkey_for_pin, $pin, $label, $mysqli);
     } catch (Throwable $e) {
         error_log("vault PIN set failed for user $session_user_id: " . $e->getMessage());
         flash_alert('Could not save vault PIN.', 'danger');

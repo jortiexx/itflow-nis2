@@ -87,10 +87,14 @@ if ($master === null) {
 $user_id    = intval($_SESSION['user_id']);
 $cred_id    = webauthnB64UrlEncode($reg['credential_id']);
 
+// Phase 11: wrap the user's privkey under the PRF KEK as well.
+$privkey_for_prf = userPrivkeyFromSession();
+
 try {
     $method_id = vaultStorePrfMethod(
         $user_id,
         $master,
+        $privkey_for_prf,
         $prf_output,
         $cred_id,
         $reg['public_key_pem'],

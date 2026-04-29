@@ -2,7 +2,80 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 10: Per-user keypair compartmentalisation
+## Unreleased — Phase 11: Closing the three Phase 10 gaps
+
+Closes the three known limitations from Phase 10:
+
+1. **SSO + PIN / SSO + PRF unlock paths** now restore the user's privkey to the session, so compartmentalisation survives those flows.
+2. **API keys** scoped to a single client (`api_key_client_id > 0`) now use a per-client wrapping that bypasses the shared master entirely — a compromised client-scoped API key cannot reach any other client's data.
+3. **Admin grant management UI**: editing a user's client access in the existing user-edit modal now keeps `user_client_grants` in sync — adds and revokes wrapping rows under the target user's pubkey on save.
+
+### Schema migration `2.4.4.8 → 2.4.4.9`
+- `user_vault_unlock_methods.wrapped_privkey` (varchar 512, nullable) — privkey wrapped under PIN/PRF KEK
+- `api_keys.api_key_client_master_wrapped` (varchar 512, nullable) — per-client master wrapped under API password
+
+### Fix #1 — Privkey under PIN/PRF KEK
+
+PIN setup (`vaultSetPin`) and PRF registration (`vaultStorePrfMethod`) now accept the user's current session privkey and wrap it under the same KEK that wraps the master key. Different IVs, same Argon2id-derived (PIN) or HKDF-derived (PRF) KEK.
+
+Unlock path returns both:
+- `vaultUnlockWithPin($user_id, $pin, $mysqli)` returns `['master' => ..., 'privkey' => ?...]`
+- `vaultUnlockWithPrf($method_id, $prf_output, $mysqli)` returns the same shape
+- `vaultTryUnlockWithPin` / `vaultTryUnlockWithPrf` retain their string-only signature for backward compat
+
+`agent/vault_unlock.php` and `agent/vault_unlock_prf_verify.php` push both materials to the session via `pushUserPrivkeyToSession()` after a successful unlock.
+
+**Net effect:** an SSO-authenticated agent who unlocks via PIN or PRF restores their privkey to the session. Subsequent credential reads use `getClientMasterKeyViaGrant()` — full Phase 10 compartmentalisation, not the shared-master fallback.
+
+**Existing PIN/PRF enrolments**: `wrapped_privkey` is NULL until the user re-enrols their PIN or registers a new PRF credential. They keep working but fall back to shared-master path for credential reads. Document in operator runbook.
+
+### Fix #2 — Per-client API key compartmentalisation
+
+API keys with a specific `api_key_client_id` now carry their own wrapping of that client's master key, encrypted under the API password using Argon2id+AES-256-GCM. Stored in `api_keys.api_key_client_master_wrapped`.
+
+API decrypt path checks this column FIRST. When present, the API key recovers the scoped client's master key directly — no shared master key is involved at any point. A compromised API key (or a leak of `api_key_decrypt_password`) only exposes that one client.
+
+`apiUnlockClientMasterKey($api_key_row, $api_password)` is the unwrap helper. It is the first thing `apiDecryptCredentialEntry` and `apiEncryptCredentialEntry` try.
+
+Global API keys (`api_key_client_id = 0`) leave the column NULL and continue to use the shared-master path. Document this is intentionally non-compartmentalised — operators wanting compartmentalisation should issue per-client keys.
+
+Existing API keys in the DB pre-Phase-11 have NULL `api_key_client_master_wrapped`. They keep working via shared-master. To move them to the per-client path: revoke and reissue.
+
+### Fix #3 — Admin grant sync
+
+`admin/post/users.php` user-edit save now syncs `user_client_grants` to match the new permission set:
+
+1. Build target client list: explicit list from POST, OR all non-archived clients if unrestricted
+2. Read current grants for the user
+3. For clients in current-grants minus target → `adminRevokeClientGrant()`
+4. For clients in target minus current-grants → `adminGrantClientToUser()`
+
+`adminGrantClientToUser` is idempotent (`INSERT … ON DUPLICATE KEY UPDATE`). If the target user has no pubkey yet (never logged in post-Phase-10), grant creation silently no-ops — the lazy backfill at the user's next login picks it up.
+
+This makes the admin UI "do the right thing" for grants without any new modal or button. Just edit the user's client access list and save — grants follow.
+
+### Self-test
+`scripts/phase11_self_test.php` — 13 tests covering:
+- PIN KEK dual-wrap of master + privkey, with both round-tripping under correct PIN and rejecting under wrong PIN
+- PRF KEK dual-wrap, same properties
+- Per-client API key wrapping recovers ONLY the scoped client master, with wrong-password rejection
+- Empty/absent column returns null (global API key behaviour)
+
+### Cumulative self-tests
+**111 / 0 failures** across 10 suites: crypto 20, Entra SSO 11, vault PIN 5, vault PRF 7, vault enrolment 6, audit log 6, WebAuthn 15, client master keys 13, keypair 15, phase 11 13.
+
+### Operator action required
+1. Run database migration: `Admin → Update → Update Database`.
+2. Run the new self-test: `php scripts/phase11_self_test.php`.
+3. **For existing PIN/PRF unlock methods** (set up before Phase 11): they keep working but fall back to shared-master path. To get compartmentalisation through PIN/PRF, users must re-enrol their PIN or PRF method while logged in via password (so the privkey is in their session).
+4. **For existing API keys**: per-client compartmentalisation requires reissue. Consider rotating client-scoped API keys.
+5. **Admin grant sync** kicks in automatically on next user-edit save.
+
+### Remaining known limitations (small, documented)
+- **JIT-only users without password**: cannot bootstrap a keypair until they have a session with the master key. Magic-link enrolment + PIN setup currently does not generate a keypair (no privkey to wrap). They fall back to shared-master path. A small follow-up could generate a keypair purely under PIN at enrolment time for JIT-only users.
+- **Global API keys** (`api_key_client_id = 0`): explicitly non-compartmentalised by design. Migrate to per-client API keys for compartmentalisation.
+
+## v0.11.0-nis2-keypair — Phase 10: Per-user keypair compartmentalisation
 
 True cryptographic compartmentalisation. Each user gets their own X25519 keypair. The private key is wrapped under their unlock factor (Argon2id KEK from password). Client master keys are sealed-box encrypted to each authorised user's public key, stored in `user_client_grants`. **A compromised user can decrypt only the clients for which a grant exists for them in the database — other clients' grants are sealed under other users' public keys and unopenable.**
 

@@ -193,11 +193,38 @@ if (isset($_POST['edit_user'])) {
 
     // Update Client Access
     mysqli_query($mysqli,"DELETE FROM user_client_permissions WHERE user_id = $user_id");
+    $new_client_ids = [];
     if (isset($_POST['clients'])) {
-        foreach($_POST['clients'] as $client_id) {
-            $client_id = intval($client_id);
-            mysqli_query($mysqli,"INSERT INTO user_client_permissions SET user_id = $user_id, client_id = $client_id");
+        foreach($_POST['clients'] as $client_id_post) {
+            $cid = intval($client_id_post);
+            $new_client_ids[] = $cid;
+            mysqli_query($mysqli,"INSERT INTO user_client_permissions SET user_id = $user_id, client_id = $cid");
         }
+    }
+
+    // Phase 11: keep user_client_grants in sync with permissions.
+    // Target set:
+    //   - restricted user (new_client_ids non-empty) → exactly that set
+    //   - unrestricted user (no rows) → all non-archived clients
+    // Diff vs current grants: revoke removed, grant added. adminGrantClient-
+    // ToUser is idempotent (INSERT ... ON DUPLICATE KEY UPDATE).
+    $target_clients = $new_client_ids;
+    if (empty($target_clients)) {
+        $rs = mysqli_query($mysqli,
+            "SELECT client_id FROM clients WHERE client_archived_at IS NULL");
+        if ($rs) while ($r = mysqli_fetch_assoc($rs)) $target_clients[] = intval($r['client_id']);
+    }
+
+    $current_grant_ids = [];
+    $rs = mysqli_query($mysqli,
+        "SELECT client_id FROM user_client_grants WHERE user_id = $user_id");
+    if ($rs) while ($r = mysqli_fetch_assoc($rs)) $current_grant_ids[] = intval($r['client_id']);
+
+    foreach (array_diff($current_grant_ids, $target_clients) as $cid) {
+        adminRevokeClientGrant($user_id, intval($cid), $mysqli);
+    }
+    foreach (array_diff($target_clients, $current_grant_ids) as $cid) {
+        adminGrantClientToUser($session_user_id, $user_id, intval($cid), $mysqli);
     }
 
     // Get current Avatar

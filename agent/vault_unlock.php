@@ -78,17 +78,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Session expired — please try again.';
     } else {
         $pin = (string)($_POST['pin'] ?? '');
-        $master = vaultTryUnlockWithPin($user_id, $pin, $mysqli);
-        if ($master !== null) {
+        $unlock = vaultUnlockWithPin($user_id, $pin, $mysqli);
+        if ($unlock !== null) {
             // Privilege escalation point — rotate the session id.
             session_regenerate_id(true);
-            generateUserSessionKey($master);
+            generateUserSessionKey($unlock['master']);
+            // Phase 11: when the PIN method also wraps the privkey, push
+            // it to the session so the user retains compartmentalised
+            // (per-grant) decrypt access after SSO+PIN unlock.
+            if (!empty($unlock['privkey'])) {
+                pushUserPrivkeyToSession($unlock['privkey']);
+            }
             $_SESSION['vault_unlocked'] = true;
             $_SESSION['csrf_token'] = randomString(32);
             logAction('Vault', 'Unlock', "$user_name unlocked vault via PIN", 0, $user_id);
             securityAudit('vault.unlock.success', [
                 'user_id' => $user_id,
-                'metadata' => ['method' => 'pin'],
+                'metadata' => ['method' => 'pin', 'privkey_restored' => !empty($unlock['privkey'])],
             ]);
             $start = $config_start_page ?? 'clients.php';
             header("Location: /agent/$start");

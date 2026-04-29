@@ -67,11 +67,18 @@ function vaultUserHasMethod(int $user_id, string $method_type, mysqli $mysqli): 
 }
 
 /**
- * Wrap the master key under a PIN-derived KEK and store it.
+ * Wrap the master key (and optionally the user's privkey) under a
+ * PIN-derived KEK and store as a 'pin' unlock method row.
+ *
+ * Phase 11: when $privkey is provided, it is wrapped under the same
+ * PIN KEK (different IV) and stored alongside. This allows
+ * vault_unlock.php to push BOTH master_key and privkey to the
+ * session after a successful PIN unlock — preserving phase-10
+ * compartmentalisation across SSO+PIN sign-ins.
  *
  * @return int the new method_id, or 0 on failure
  */
-function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, #[\SensitiveParameter] string $pin, string $label, mysqli $mysqli): int
+function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, ?string $privkey, #[\SensitiveParameter] string $pin, string $label, mysqli $mysqli): int
 {
     if (strlen($pin) < VAULT_PIN_MIN_LENGTH) {
         throw new RuntimeException('PIN is too short (minimum ' . VAULT_PIN_MIN_LENGTH . ' characters)');
@@ -82,16 +89,24 @@ function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, #[
 
     $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
     $kek  = deriveKekArgon2id($pin, $salt);
-    $blob = cryptoEncryptV2($master_key, $kek);
+
+    $blob_master  = cryptoEncryptV2($master_key, $kek);
+    $blob_privkey = ($privkey !== null && $privkey !== '')
+        ? cryptoEncryptV2($privkey, $kek)
+        : null;
     sodium_memzero($kek);
 
-    $salt_b64    = base64_encode($salt);
-    $wrapped_b64 = base64_encode($blob);
+    $salt_b64        = base64_encode($salt);
+    $wrapped_master  = base64_encode($blob_master);
+    $wrapped_privkey = $blob_privkey !== null ? base64_encode($blob_privkey) : null;
 
-    $salt_e    = mysqli_real_escape_string($mysqli, $salt_b64);
-    $wrapped_e = mysqli_real_escape_string($mysqli, $wrapped_b64);
-    $label_e   = mysqli_real_escape_string($mysqli, $label !== '' ? $label : 'Vault PIN');
-    $user_id   = intval($user_id);
+    $salt_e          = mysqli_real_escape_string($mysqli, $salt_b64);
+    $wrapped_e       = mysqli_real_escape_string($mysqli, $wrapped_master);
+    $wrapped_priv_e  = $wrapped_privkey !== null
+        ? "'" . mysqli_real_escape_string($mysqli, $wrapped_privkey) . "'"
+        : 'NULL';
+    $label_e         = mysqli_real_escape_string($mysqli, $label !== '' ? $label : 'Vault PIN');
+    $user_id         = intval($user_id);
 
     // One PIN per user — replace if exists
     mysqli_query(
@@ -108,6 +123,7 @@ function vaultSetPin(int $user_id, #[\SensitiveParameter] string $master_key, #[
              label = '$label_e',
              salt = '$salt_e',
              wrapped_master_key = '$wrapped_e',
+             wrapped_privkey = $wrapped_priv_e,
              created_at = NOW()"
     );
     return intval(mysqli_insert_id($mysqli));
@@ -136,6 +152,7 @@ function vaultDeriveKekFromPrf(#[\SensitiveParameter] string $prf_output): strin
 function vaultStorePrfMethod(
     int $user_id,
     #[\SensitiveParameter] string $master_key,
+    ?string $privkey,
     #[\SensitiveParameter] string $prf_output,
     string $credential_id_b64,
     string $public_key_pem,
@@ -149,29 +166,34 @@ function vaultStorePrfMethod(
         throw new RuntimeException('vaultStorePrfMethod: prf_salt must be 32 bytes');
     }
 
-    $kek     = vaultDeriveKekFromPrf($prf_output);
-    $wrapped = cryptoEncryptV2($master_key, $kek);
+    $kek            = vaultDeriveKekFromPrf($prf_output);
+    $wrapped_master = cryptoEncryptV2($master_key, $kek);
+    $wrapped_priv   = ($privkey !== null && $privkey !== '')
+        ? cryptoEncryptV2($privkey, $kek)
+        : null;
     sodium_memzero($kek);
 
-    $wrapped_b64  = base64_encode($wrapped);
-    $prf_salt_b64 = base64_encode($prf_salt_raw);
-    $label = $label !== '' ? substr($label, 0, 100) : 'Hardware unlock';
+    $wrapped_master_b64 = base64_encode($wrapped_master);
+    $wrapped_priv_b64   = $wrapped_priv !== null ? base64_encode($wrapped_priv) : null;
+    $prf_salt_b64       = base64_encode($prf_salt_raw);
+    $label              = $label !== '' ? substr($label, 0, 100) : 'Hardware unlock';
 
     $stmt = mysqli_prepare($mysqli, "
         INSERT INTO user_vault_unlock_methods
-        (user_id, method_type, label, salt, wrapped_master_key,
+        (user_id, method_type, label, salt, wrapped_master_key, wrapped_privkey,
          credential_id, public_key, sign_count, prf_salt, created_at)
-        VALUES (?, 'webauthn_prf', ?, '', ?, ?, ?, ?, ?, NOW())
+        VALUES (?, 'webauthn_prf', ?, '', ?, ?, ?, ?, ?, ?, NOW())
     ");
     if (!$stmt) {
         throw new RuntimeException('vaultStorePrfMethod: prepare failed');
     }
-    // positions:  user_id, label, wrapped, cred_id, pubkey, sign_count, prf_salt
-    //             i        s      s        s        s       i           s
+    // positions:  user_id, label, wrapped_master, wrapped_priv, cred_id, pubkey, sign_count, prf_salt
+    //             i        s      s               s             s        s       i           s
     mysqli_stmt_bind_param(
         $stmt,
-        'issssis',
-        $user_id, $label, $wrapped_b64, $credential_id_b64, $public_key_pem, $sign_count, $prf_salt_b64
+        'isssssis',
+        $user_id, $label, $wrapped_master_b64, $wrapped_priv_b64,
+        $credential_id_b64, $public_key_pem, $sign_count, $prf_salt_b64
     );
     mysqli_stmt_execute($stmt);
     $insert_id = mysqli_insert_id($mysqli);
@@ -202,14 +224,16 @@ function vaultFindPrfMethodByCredentialId(int $user_id, string $credential_id_b6
 
 /**
  * Unlock the vault using a PRF output (after the assertion has been verified).
- * Returns the master key on success, or null on tag mismatch.
+ * Phase 11: returns ['master' => ..., 'privkey' => ?...] when the privkey is
+ * also wrapped in this method's row. The wrapper vaultTryUnlockWithPrf()
+ * preserves the legacy single-string return.
  */
-function vaultTryUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $prf_output, mysqli $mysqli): ?string
+function vaultUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $prf_output, mysqli $mysqli): ?array
 {
     $method_id = intval($method_id);
     $row = mysqli_fetch_assoc(mysqli_query(
         $mysqli,
-        "SELECT wrapped_master_key, failed_attempts, locked_until
+        "SELECT wrapped_master_key, wrapped_privkey, failed_attempts, locked_until
          FROM user_vault_unlock_methods
          WHERE method_id = $method_id AND method_type = 'webauthn_prf'
          LIMIT 1"
@@ -224,6 +248,18 @@ function vaultTryUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $pr
     try {
         $kek    = vaultDeriveKekFromPrf($prf_output);
         $master = cryptoDecryptV2($wrapped, $kek);
+
+        $privkey = null;
+        if (!empty($row['wrapped_privkey'])) {
+            $blob_priv = base64_decode($row['wrapped_privkey'], true);
+            if ($blob_priv !== false) {
+                try {
+                    $privkey = cryptoDecryptV2($blob_priv, $kek);
+                } catch (Throwable $e) {
+                    error_log("vaultUnlockWithPrf: privkey unwrap failed for method_id=$method_id");
+                }
+            }
+        }
         sodium_memzero($kek);
     } catch (Throwable $e) {
         $new_attempts = intval($row['failed_attempts']) + 1;
@@ -241,7 +277,14 @@ function vaultTryUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $pr
     mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
         SET failed_attempts = 0, locked_until = NULL, last_used_at = NOW()
         WHERE method_id = $method_id");
-    return $master;
+    return ['master' => $master, 'privkey' => $privkey];
+}
+
+// Backward-compatible thin wrapper.
+function vaultTryUnlockWithPrf(int $method_id, #[\SensitiveParameter] string $prf_output, mysqli $mysqli): ?string
+{
+    $r = vaultUnlockWithPrf($method_id, $prf_output, $mysqli);
+    return $r === null ? null : $r['master'];
 }
 
 function vaultDeleteMethod(int $method_id, int $user_id, mysqli $mysqli): bool
@@ -266,16 +309,23 @@ function vaultIsLocked(array $method_row): bool
 
 /**
  * Try to unlock the vault for $user_id using $pin.
- * On success, returns the master key (raw bytes).
- * On wrong PIN, increments failed_attempts (and may lock the method).
- * On non-existent or locked method, returns null.
+ *
+ * Phase 11: returns the unwrapped master key AND privkey (if present)
+ * via the array form `vaultUnlockWithPin()`. The legacy
+ * `vaultTryUnlockWithPin()` keeps the original signature for any
+ * other caller — it forwards to the new function and discards the
+ * privkey.
+ *
+ * Returns null on wrong PIN, locked method, or malformed row.
+ * Wrong PIN attempts increment failed_attempts (may lock the method).
  */
-function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin, mysqli $mysqli): ?string
+function vaultUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin, mysqli $mysqli): ?array
 {
     $user_id = intval($user_id);
     $row = mysqli_fetch_assoc(mysqli_query(
         $mysqli,
-        "SELECT method_id, salt, wrapped_master_key, failed_attempts, locked_until
+        "SELECT method_id, salt, wrapped_master_key, wrapped_privkey,
+                failed_attempts, locked_until
          FROM user_vault_unlock_methods
          WHERE user_id = $user_id AND method_type = 'pin'
          LIMIT 1"
@@ -291,16 +341,31 @@ function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin,
     $salt      = base64_decode($row['salt'], true);
     $wrapped   = base64_decode($row['wrapped_master_key'], true);
     if ($salt === false || $wrapped === false || strlen($salt) !== SODIUM_CRYPTO_PWHASH_SALTBYTES) {
-        // Stored row is malformed; treat as an unlock failure.
         return null;
     }
 
     try {
         $kek    = deriveKekArgon2id($pin, $salt);
         $master = cryptoDecryptV2($wrapped, $kek);
+
+        $privkey = null;
+        if (!empty($row['wrapped_privkey'])) {
+            $blob_priv = base64_decode($row['wrapped_privkey'], true);
+            if ($blob_priv !== false) {
+                try {
+                    $privkey = cryptoDecryptV2($blob_priv, $kek);
+                } catch (Throwable $e) {
+                    // Privkey ciphertext malformed but master succeeded.
+                    // Continue without privkey; user falls back to shared
+                    // master path until they re-enrol PIN.
+                    error_log("vaultUnlockWithPin: privkey unwrap failed for method_id=$method_id");
+                    $privkey = null;
+                }
+            }
+        }
         sodium_memzero($kek);
     } catch (Throwable $e) {
-        // Wrong PIN, or tampered ciphertext. Increment failure counter.
+        // Wrong PIN, or tampered ciphertext on master. Increment counter.
         $new_attempts = intval($row['failed_attempts']) + 1;
         if ($new_attempts >= VAULT_LOCKOUT_THRESHOLD) {
             mysqli_query(
@@ -321,7 +386,6 @@ function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin,
         return null;
     }
 
-    // Success: reset counters
     mysqli_query(
         $mysqli,
         "UPDATE user_vault_unlock_methods
@@ -330,7 +394,14 @@ function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin,
              last_used_at = NOW()
          WHERE method_id = $method_id"
     );
-    return $master;
+    return ['master' => $master, 'privkey' => $privkey];
+}
+
+// Backward-compatible thin wrapper.
+function vaultTryUnlockWithPin(int $user_id, #[\SensitiveParameter] string $pin, mysqli $mysqli): ?string
+{
+    $r = vaultUnlockWithPin($user_id, $pin, $mysqli);
+    return $r === null ? null : $r['master'];
 }
 
 /**
