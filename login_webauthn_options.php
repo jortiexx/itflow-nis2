@@ -5,6 +5,8 @@
  * has already passed password verification.
  */
 
+ob_start();
+
 require_once 'config.php';
 require_once 'functions.php';
 require_once 'includes/security_headers.php';
@@ -18,6 +20,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+ob_end_clean();
 header('Content-Type: application/json');
 
 $pending = $_SESSION['pending_mfa_login'] ?? null;

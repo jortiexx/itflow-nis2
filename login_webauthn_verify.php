@@ -8,6 +8,8 @@
  * a redirect URL.
  */
 
+ob_start();
+
 require_once 'config.php';
 require_once 'functions.php';
 require_once 'includes/security_headers.php';
@@ -23,6 +25,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+ob_end_clean();
 header('Content-Type: application/json');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

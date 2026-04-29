@@ -5,10 +5,15 @@
  * navigator.credentials.create().
  */
 
+// Capture any stray output from the include chain (warnings, notices,
+// HTML from auth-redirect pages) so the response stays valid JSON.
+ob_start();
+
 require_once __DIR__ . '/../../includes/check_login.php';
 require_once __DIR__ . '/../../includes/webauthn.php';
 require_once __DIR__ . '/../../includes/security_audit.php';
 
+ob_end_clean();
 header('Content-Type: application/json');
 
 if (empty($_SESSION['user_id'])) {

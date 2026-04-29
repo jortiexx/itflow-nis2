@@ -4,10 +4,13 @@
  * response and store the credential.
  */
 
+ob_start();
+
 require_once __DIR__ . '/../../includes/check_login.php';
 require_once __DIR__ . '/../../includes/webauthn.php';
 require_once __DIR__ . '/../../includes/security_audit.php';
 
+ob_end_clean();
 header('Content-Type: application/json');
 
 if (empty($_SESSION['user_id'])) {
