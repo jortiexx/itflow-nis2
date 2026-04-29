@@ -629,13 +629,18 @@ $show_login_form = (!$show_role_choice && !$show_mfa_form);
 
 // Detect WebAuthn enrolment for the pending MFA user, so the MFA form can
 // offer "Use security key" alongside the TOTP code field.
+// Wrapped: the user_webauthn_credentials table only exists post-migration.
 $webauthn_available = false;
 if ($show_mfa_form && !empty($_SESSION['pending_mfa_login']['agent_user_id'])) {
-    $pending_uid = intval($_SESSION['pending_mfa_login']['agent_user_id']);
-    $row_wa = mysqli_fetch_assoc(mysqli_query($mysqli,
-        "SELECT COUNT(*) AS n FROM user_webauthn_credentials WHERE user_id = $pending_uid"
-    ));
-    $webauthn_available = $row_wa && intval($row_wa['n']) > 0;
+    try {
+        $pending_uid = intval($_SESSION['pending_mfa_login']['agent_user_id']);
+        $row_wa = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM user_webauthn_credentials WHERE user_id = $pending_uid"
+        ));
+        $webauthn_available = $row_wa && intval($row_wa['n']) > 0;
+    } catch (Throwable $e) {
+        $webauthn_available = false;
+    }
 }
 
 ?>

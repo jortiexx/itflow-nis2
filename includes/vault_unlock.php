@@ -25,35 +25,45 @@ const VAULT_LOCKOUT_MINUTES   = 15;
 
 function vaultListMethods(int $user_id, mysqli $mysqli): array
 {
-    $user_id = intval($user_id);
-    $rs = mysqli_query(
-        $mysqli,
-        "SELECT method_id, method_type, label, failed_attempts, locked_until,
-                created_at, last_used_at
-         FROM user_vault_unlock_methods
-         WHERE user_id = $user_id
-         ORDER BY method_type ASC, created_at ASC"
-    );
-    $out = [];
-    if ($rs) {
-        while ($row = mysqli_fetch_assoc($rs)) {
-            $out[] = $row;
+    // Returns [] if the table does not yet exist (pre-migration state).
+    try {
+        $user_id = intval($user_id);
+        $rs = mysqli_query(
+            $mysqli,
+            "SELECT method_id, method_type, label, failed_attempts, locked_until,
+                    created_at, last_used_at
+             FROM user_vault_unlock_methods
+             WHERE user_id = $user_id
+             ORDER BY method_type ASC, created_at ASC"
+        );
+        $out = [];
+        if ($rs) {
+            while ($row = mysqli_fetch_assoc($rs)) {
+                $out[] = $row;
+            }
         }
+        return $out;
+    } catch (Throwable $e) {
+        return [];
     }
-    return $out;
 }
 
 function vaultUserHasMethod(int $user_id, string $method_type, mysqli $mysqli): bool
 {
-    $user_id = intval($user_id);
-    $type_e  = mysqli_real_escape_string($mysqli, $method_type);
-    $row = mysqli_fetch_assoc(mysqli_query(
-        $mysqli,
-        "SELECT COUNT(*) AS n
-         FROM user_vault_unlock_methods
-         WHERE user_id = $user_id AND method_type = '$type_e'"
-    ));
-    return $row && intval($row['n']) > 0;
+    // Returns false if the table does not yet exist.
+    try {
+        $user_id = intval($user_id);
+        $type_e  = mysqli_real_escape_string($mysqli, $method_type);
+        $row = mysqli_fetch_assoc(mysqli_query(
+            $mysqli,
+            "SELECT COUNT(*) AS n
+             FROM user_vault_unlock_methods
+             WHERE user_id = $user_id AND method_type = '$type_e'"
+        ));
+        return $row && intval($row['n']) > 0;
+    } catch (Throwable $e) {
+        return false;
+    }
 }
 
 /**

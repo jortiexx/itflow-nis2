@@ -10,13 +10,17 @@ $vault_methods = vaultListMethods($session_user_id, $mysqli);
 $vault_master_key_present = (vaultMasterKeyFromSession() !== null);
 
 $webauthn_creds = [];
-$rs = mysqli_query($mysqli, "
-    SELECT cred_id, label, cose_alg, created_at, last_used_at
-    FROM user_webauthn_credentials
-    WHERE user_id = $session_user_id
-    ORDER BY created_at ASC
-");
-if ($rs) while ($r = mysqli_fetch_assoc($rs)) $webauthn_creds[] = $r;
+try {
+    $rs = mysqli_query($mysqli, "
+        SELECT cred_id, label, cose_alg, created_at, last_used_at
+        FROM user_webauthn_credentials
+        WHERE user_id = $session_user_id
+        ORDER BY created_at ASC
+    ");
+    if ($rs) while ($r = mysqli_fetch_assoc($rs)) $webauthn_creds[] = $r;
+} catch (Throwable $e) {
+    // Table does not exist yet (pre-migration). Silently treat as empty list.
+}
 
 ?>
 
