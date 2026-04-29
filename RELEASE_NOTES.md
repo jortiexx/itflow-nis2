@@ -2,6 +2,33 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.15.1-nis2-photos — Hotfix: re-allow public branding paths
+
+Phase 14's full default-deny on `uploads/.htaccess` over-reached. Three
+public-by-design asset categories live in the same `uploads/` tree as
+customer data and must remain reachable without a session:
+
+- `uploads/favicon.ico` — `<link rel=icon>` on every page including
+  pre-auth login + vault unlock pages.
+- `uploads/settings/<company_logo>` — rendered on the login page, vault
+  unlock, vault enrol, client portal header, and guest share-views.
+- `uploads/documents/<id>/<inline_image>` — TinyMCE-embedded images
+  inside document bodies; the document body is gated by ACL but the
+  `<img>` tags fetch directly.
+
+Fix: parent `uploads/.htaccess` keeps the default-deny, with a `<Files
+"favicon.ico">` override for the favicon. New `uploads/settings/.htaccess`
+and `uploads/documents/.htaccess` re-grant access in those subtrees, with
+their own deny-list for executable extensions as belt-and-braces.
+
+Also: `guest/guest_view_ticket.php` now forces the initials fallback for
+ticket-reply avatars (the `<img>` was previously rendering as a broken
+image because `$user_avatar` was non-empty even though the URL 403'd).
+Token-scoped photo access for guest share-views remains out of scope.
+
+No other code changes. The customer-data tree (`uploads/clients/*`,
+`uploads/users/*`) stays fully default-deny.
+
 ## v0.15.0-nis2-photos — Phase 14: PHP-mediated photo endpoint + uploads default-deny
 
 Closes the photo gap left open at the end of phase 13. Asset, contact, rack, and location photos plus user/operator avatars no longer come from direct `/uploads/...` URLs. Every photo fetch now routes through `/photo.php`, which:

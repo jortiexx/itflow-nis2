@@ -1,12 +1,12 @@
-# Phase 13/14: deny ALL direct access to uploaded files. Every fetch must
-# go through one of:
+# Phase 13/14: deny ALL direct access to uploaded files by default. Every
+# customer-data fetch must go through one of:
 #   /agent/file_download.php?id=N        - generic files (encrypted, audited)
 #   /photo.php?type=X&id=N               - photos (ACL'd, MIME-checked)
 # Both endpoints authenticate, ACL-check, and audit denials.
 #
-# Apache MUST NOT serve anything from this directory tree directly. PHP
-# reads files via the filesystem (readfile / file_get_contents), which is
-# unaffected by these rules.
+# Public-by-design assets (favicon, company logo, document inline images)
+# are re-granted access — favicon.ico via a <Files> override here, and
+# subdirectories settings/ + documents/ via their own .htaccess files.
 
 Options -Indexes -ExecCGI
 php_flag engine off
@@ -18,7 +18,15 @@ RemoveType .php .phtml .phar .phps
   Require all denied
 </FilesMatch>
 
-# Default-deny everything else.
+# Default-deny everything.
 <FilesMatch ".*">
   Require all denied
 </FilesMatch>
+
+# Re-allow the favicon (rendered in <link rel=icon> on every page,
+# including pre-auth login / vault unlock — must be fetchable without
+# a session). The <Files> override comes after the wildcard deny so
+# Apache 2.4 authorization merging picks the more specific rule.
+<Files "favicon.ico">
+  Require all granted
+</Files>

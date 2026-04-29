@@ -1,0 +1,14 @@
+# Public-by-design branding assets (company logo). Rendered on the login
+# page, vault unlock, vault enrol, client portal header, and guest
+# share-views — all of which must work pre-auth.
+#
+# This file overrides the parent uploads/.htaccess default-deny.
+
+<FilesMatch ".*">
+  Require all granted
+</FilesMatch>
+
+# Still block any scriptable type as belt-and-braces.
+<FilesMatch "\.(php|phtml|phar|phps|cgi|pl|sh|py|rb|asp|aspx|jsp|exe|bat|ps1)$">
+  Require all denied
+</FilesMatch>

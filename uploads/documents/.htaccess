@@ -1,0 +1,15 @@
+# TinyMCE inline images embedded inside document bodies. The document
+# body itself is access-controlled (only users with the right grant can
+# open it), but once it's open the <img> tags inside fetch directly from
+# this path. Operator-authored illustrations, not customer personal data.
+#
+# This file overrides the parent uploads/.htaccess default-deny.
+
+<FilesMatch ".*">
+  Require all granted
+</FilesMatch>
+
+# Still block any scriptable type as belt-and-braces.
+<FilesMatch "\.(php|phtml|phar|phps|cgi|pl|sh|py|rb|asp|aspx|jsp|exe|bat|ps1)$">
+  Require all denied
+</FilesMatch>

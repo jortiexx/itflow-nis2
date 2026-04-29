@@ -157,18 +157,23 @@ if ($ticket_row) {
         $ticket_reply_by = intval($row['ticket_reply_by']);
         $ticket_reply_type = $row['ticket_reply_type'];
 
+        // Guest views run without an authenticated session, so we cannot
+        // route avatars through /photo.php (which requires either an agent
+        // or client portal session). Force the initials-fallback by leaving
+        // $user_avatar empty — the render block below already handles that
+        // path. Avatar images on guest share-views are intentionally not
+        // exposed; if you want them back, the right move is a token-scoped
+        // photo endpoint (out of scope for this phase).
         if ($ticket_reply_type == "Client") {
             $ticket_reply_by_display = nullable_htmlentities($row['contact_name']);
             $user_initials = initials($row['contact_name']);
-            $user_avatar = $row['contact_photo'];
-            $avatar_link = "../uploads/clients/$ticket_reply_by/$user_avatar";
         } else {
             $ticket_reply_by_display = nullable_htmlentities($row['user_name']);
             $user_id = intval($row['user_id']);
-            $user_avatar = $row['user_avatar'];
             $user_initials = initials($row['user_name']);
-            $avatar_link = "../uploads/users/$user_id/$user_avatar";
         }
+        $user_avatar = ''; // force initials fallback in the template below
+        $avatar_link = '';
         ?>
 
         <div class="card card-outline <?php if ($ticket_reply_type == 'Client') { echo "card-warning"; } else { echo "card-info"; } ?> mb-3">
