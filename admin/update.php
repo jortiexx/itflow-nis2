@@ -38,7 +38,7 @@ $current_remote = trim(shell_exec("git remote get-url origin 2>&1"));
                 </div>
             <?php } ?>
 
-            <?php if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) { ?>
+            <?php if (version_compare(LATEST_DATABASE_VERSION, CURRENT_DATABASE_VERSION, '>')) { ?>
                 <div class="alert alert-danger">
                     <h1 class="font-weight-bold text-center">⚠️ DANGER ⚠️</h1>
                     <h2 class="font-weight-bold text-center">Do NOT run updates without first taking a backup</h2>
