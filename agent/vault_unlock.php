@@ -70,9 +70,9 @@ $error = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // Per-IP rate limit: 20 failed PIN attempts in 10 minutes blocks further tries.
+    // Per-IP rate limit. Configurable via Admin → Security settings.
     $session_ip = mysqli_real_escape_string($mysqli, sanitizeInput(getIP()));
-    rateLimitCheck('Vault', 'Unlock failed', 20, 600);
+    rateLimitCheckScope('vault', $mysqli);
 
     if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
         $error = 'Session expired — please try again.';

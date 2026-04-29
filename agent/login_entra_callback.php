@@ -33,8 +33,8 @@ require_once __DIR__ . '/../includes/inc_set_timezone.php';
 $session_ip         = sanitizeInput(getIP());
 $session_user_agent = sanitizeInput($_SERVER['HTTP_USER_AGENT'] ?? '');
 
-// Per-IP rate limit: 20 failed SSO attempts in 10 minutes blocks further tries.
-rateLimitCheck('SSO Login', 'Failed', 20, 600);
+// Per-IP rate limit. Configurable via Admin → Security settings.
+rateLimitCheckScope('sso', $mysqli);
 
 function ssoFail(string $reason, string $detail = ''): void
 {

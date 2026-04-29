@@ -9,6 +9,7 @@
 // Includes
 require_once __DIR__ . '../../../functions.php';
 require_once __DIR__ . "../../../config.php";
+require_once __DIR__ . "../../../includes/rate_limit.php";
 
 // JSON header
 header('Content-Type: application/json');
@@ -23,6 +24,11 @@ $user_agent = sanitizeInput($_SERVER['HTTP_USER_AGENT']);
 // Temp Added this to work with the new logAction function
 $session_ip = $ip;
 $session_user_agent = $user_agent;
+
+// Per-IP rate limit on API authentication failures. Configurable via
+// Admin → Security settings. Stops password-spray-style enumeration of
+// API keys from a single source.
+rateLimitCheckScope('api', $mysqli);
 
 // Setup return array
 $return_arr = array();

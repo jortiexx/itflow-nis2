@@ -114,6 +114,19 @@ $config_login_key_secret = $row['config_login_key_secret'];
 $config_login_remember_me_expire = intval($row['config_login_remember_me_expire']);
 $config_log_retention = intval($row['config_log_retention']);
 
+// Rate limiting (phase 16; columns may not exist mid-upgrade)
+$config_ratelimit_enabled        = isset($row['config_ratelimit_enabled']) ? intval($row['config_ratelimit_enabled']) : 1;
+$config_ratelimit_login_max      = intval($row['config_ratelimit_login_max']      ?? 10);
+$config_ratelimit_login_window   = intval($row['config_ratelimit_login_window']   ?? 600);
+$config_ratelimit_vault_max      = intval($row['config_ratelimit_vault_max']      ?? 20);
+$config_ratelimit_vault_window   = intval($row['config_ratelimit_vault_window']   ?? 600);
+$config_ratelimit_sso_max        = intval($row['config_ratelimit_sso_max']        ?? 20);
+$config_ratelimit_sso_window     = intval($row['config_ratelimit_sso_window']     ?? 600);
+$config_ratelimit_api_max        = intval($row['config_ratelimit_api_max']        ?? 30);
+$config_ratelimit_api_window     = intval($row['config_ratelimit_api_window']     ?? 600);
+$config_ratelimit_pwreset_max    = intval($row['config_ratelimit_pwreset_max']    ?? 5);
+$config_ratelimit_pwreset_window = intval($row['config_ratelimit_pwreset_window'] ?? 3600);
+
 // Locale
 $config_currency_format = "US_en";
 $config_timezone = $row['config_timezone'];

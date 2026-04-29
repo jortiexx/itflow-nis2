@@ -17,6 +17,88 @@
  * which already log via logAction.
  */
 
+/**
+ * Built-in defaults for each rate-limit scope. Used when the settings
+ * row is missing the column (fresh install before the migration runs)
+ * or when the config value is non-positive (treat as disabled scope).
+ */
+if (!defined('RATELIMIT_DEFAULTS')) {
+    define('RATELIMIT_DEFAULTS', [
+        'login'   => ['max' => 10, 'window' => 600,  'log_type' => 'Login',     'log_action' => 'Failed'],
+        'vault'   => ['max' => 20, 'window' => 600,  'log_type' => 'Vault',     'log_action' => 'Unlock failed'],
+        'sso'     => ['max' => 20, 'window' => 600,  'log_type' => 'SSO Login', 'log_action' => 'Failed'],
+        'api'     => ['max' => 30, 'window' => 600,  'log_type' => 'API',       'log_action' => 'Failed'],
+        'pwreset' => ['max' => 5,  'window' => 3600, 'log_type' => 'Contact',   'log_action' => 'Modify'],
+    ]);
+}
+
+if (!function_exists('rateLimitConfig')) {
+    /**
+     * Read rate-limit thresholds from the settings row. Returns a static
+     * cache so subsequent calls are free. Falls back to RATELIMIT_DEFAULTS
+     * if the columns don't exist yet (mid-upgrade).
+     */
+    function rateLimitConfig(mysqli $mysqli): array
+    {
+        static $cache = null;
+        if ($cache !== null) return $cache;
+
+        $cache = [
+            'enabled' => true,
+            'scopes'  => RATELIMIT_DEFAULTS,
+        ];
+
+        $row = @mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT config_ratelimit_enabled,
+                    config_ratelimit_login_max, config_ratelimit_login_window,
+                    config_ratelimit_vault_max, config_ratelimit_vault_window,
+                    config_ratelimit_sso_max, config_ratelimit_sso_window,
+                    config_ratelimit_api_max, config_ratelimit_api_window,
+                    config_ratelimit_pwreset_max, config_ratelimit_pwreset_window
+             FROM settings WHERE company_id = 1 LIMIT 1"));
+        if (!$row) {
+            return $cache;
+        }
+        $cache['enabled'] = !isset($row['config_ratelimit_enabled']) || intval($row['config_ratelimit_enabled']) === 1;
+
+        $map = [
+            'login'   => ['max' => 'config_ratelimit_login_max',   'window' => 'config_ratelimit_login_window'],
+            'vault'   => ['max' => 'config_ratelimit_vault_max',   'window' => 'config_ratelimit_vault_window'],
+            'sso'     => ['max' => 'config_ratelimit_sso_max',     'window' => 'config_ratelimit_sso_window'],
+            'api'     => ['max' => 'config_ratelimit_api_max',     'window' => 'config_ratelimit_api_window'],
+            'pwreset' => ['max' => 'config_ratelimit_pwreset_max', 'window' => 'config_ratelimit_pwreset_window'],
+        ];
+        foreach ($map as $scope => $cols) {
+            if (isset($row[$cols['max']]) && intval($row[$cols['max']]) > 0) {
+                $cache['scopes'][$scope]['max'] = intval($row[$cols['max']]);
+            }
+            if (isset($row[$cols['window']]) && intval($row[$cols['window']]) > 0) {
+                $cache['scopes'][$scope]['window'] = intval($row[$cols['window']]);
+            }
+        }
+        return $cache;
+    }
+}
+
+if (!function_exists('rateLimitCheckScope')) {
+    /**
+     * Look up the configured threshold for the named scope and apply it.
+     *
+     * Scopes: login | vault | sso | api | pwreset
+     *
+     * No-op if rate limiting is globally disabled in settings, or if the
+     * scope name is unknown.
+     */
+    function rateLimitCheckScope(string $scope, mysqli $mysqli): void
+    {
+        $cfg = rateLimitConfig($mysqli);
+        if (!$cfg['enabled']) return;
+        if (!isset($cfg['scopes'][$scope])) return;
+        $s = $cfg['scopes'][$scope];
+        rateLimitCheck($s['log_type'], $s['log_action'], $s['max'], $s['window']);
+    }
+}
+
 if (!function_exists('rateLimitCheck')) {
 
     /**

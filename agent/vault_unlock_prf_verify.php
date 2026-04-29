@@ -53,7 +53,7 @@ if (!$challenge) {
 }
 
 $session_ip = mysqli_real_escape_string($mysqli, sanitizeInput(getIP()));
-rateLimitCheck('Vault', 'Unlock failed', 20, 600);
+rateLimitCheckScope('vault', $mysqli);
 
 $payload        = json_decode($_POST['credential'] ?? '', true);
 $prf_output_b64 = (string)($_POST['prf_output'] ?? '');

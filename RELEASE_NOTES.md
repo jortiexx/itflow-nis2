@@ -2,6 +2,52 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.17.0-nis2-ratelimits — Phase 16: configurable rate limits + API auth throttling
+
+Closes two of the technical gaps flagged at the end of phase 15:
+- API key authentication had no rate limit (a brute-forcer could try keys all day).
+- Existing throttles on login / vault unlock / SSO were hardcoded; admin had no way to tighten or loosen them.
+
+### Schema (DB version 2.4.4.12)
+Eleven new columns on `settings`:
+- `config_ratelimit_enabled` (default 1)
+- `config_ratelimit_login_max` / `_window` (default 10 / 600 s)
+- `config_ratelimit_vault_max` / `_window` (default 20 / 600 s)
+- `config_ratelimit_sso_max` / `_window` (default 20 / 600 s)
+- `config_ratelimit_api_max` / `_window` (default 30 / 600 s)
+- `config_ratelimit_pwreset_max` / `_window` (default 5 / 3600 s)
+
+### Helper layer
+`includes/rate_limit.php` gains two new entry points alongside the existing low-level `rateLimitCheck()`:
+- `rateLimitConfig($mysqli)` — reads thresholds from `settings`, falls back to baked-in defaults if columns are missing (mid-upgrade safe). Static-cached so subsequent calls are free.
+- `rateLimitCheckScope($scope, $mysqli)` — looks up the named scope (`login` / `vault` / `sso` / `api` / `pwreset`), enforces it, no-op when global enable is off.
+
+### Settings UI
+`admin/settings_security.php` (existing page) gains a "Rate limiting" section: master on/off switch + per-scope max/window inputs, each with a description of what it does and its default. Form values are clamped on save (`max ≥ 1`, `window ≥ 60 s`) so an admin can't accidentally configure "always block" or "useless 1-second window".
+
+### Enforcement points wired
+| Entry point | Scope | Notes |
+|---|---|---|
+| `login.php` | `login` | Replaces the old hardcoded 15/10min throttle |
+| `agent/vault_unlock.php` | `vault` | PIN unlock POST |
+| `agent/vault_unlock_prf_verify.php` | `vault` | WebAuthn-PRF unlock |
+| `agent/login_entra_callback.php` | `sso` | Entra ID callback failures |
+| `api/v1/validate_api_key.php` | `api` | **NEW** — was previously unthrottled |
+| `client/login_reset.php` | `pwreset` | **NEW** — stops password-reset email bombing |
+
+All sites use `rateLimitCheckScope($scope, $mysqli)`, so changing the threshold from the admin UI takes effect on the next request without a code change.
+
+### API endpoint audit (companion to phase 16)
+Reviewed `api/v1/credentials/*` and `api/v1/documents/*` for crypto correctness:
+- Credentials API write/read uses `apiEncryptCredentialEntry` / `apiDecryptCredentialEntry` with `$client_id` (per-client v3 path). ✓
+- Documents API stores `document_content` as plaintext, consistent with the v0.14.1 revert (document body is content, not a bearer secret). ✓
+
+No code changes needed for the API beyond adding the rate-limit hook.
+
+### Operator action required
+- After deploy: visit Admin → Settings → Security. Confirm the new "Rate limiting" section is present. Defaults are sane; tighten if your install is more sensitive.
+- Optional: tail `logs` table for `Blocked` entries after a few days to spot unintended blocks. If a legitimate workflow trips the limit (e.g. an automation that does many API requests), raise that scope's threshold or extend the window.
+
 ## v0.16.1-nis2-sweeper — Phase 15: first-login migration UI with progress bar
 
 Replaces the silent once-per-hour opportunistic sweep from v0.16.0 with a one-shot blocking migration UI on the first admin login after upgrade.

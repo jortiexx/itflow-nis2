@@ -4646,6 +4646,26 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.11'");
     }
 
+    // 2.4.4.11 -> 2.4.4.12: phase 16 — admin-configurable rate limits for
+    // login, vault unlock, SSO callback, API auth, password reset email
+    // requests. Defaults are sane out-of-the-box; admin can tighten or
+    // loosen per-scope from admin/settings_security.php.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.11') {
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_ratelimit_enabled`         TINYINT(1) NOT NULL DEFAULT 1,
+            ADD COLUMN `config_ratelimit_login_max`       INT NOT NULL DEFAULT 10,
+            ADD COLUMN `config_ratelimit_login_window`    INT NOT NULL DEFAULT 600,
+            ADD COLUMN `config_ratelimit_vault_max`       INT NOT NULL DEFAULT 20,
+            ADD COLUMN `config_ratelimit_vault_window`    INT NOT NULL DEFAULT 600,
+            ADD COLUMN `config_ratelimit_sso_max`         INT NOT NULL DEFAULT 20,
+            ADD COLUMN `config_ratelimit_sso_window`      INT NOT NULL DEFAULT 600,
+            ADD COLUMN `config_ratelimit_api_max`         INT NOT NULL DEFAULT 30,
+            ADD COLUMN `config_ratelimit_api_window`      INT NOT NULL DEFAULT 600,
+            ADD COLUMN `config_ratelimit_pwreset_max`     INT NOT NULL DEFAULT 5,
+            ADD COLUMN `config_ratelimit_pwreset_window`  INT NOT NULL DEFAULT 3600");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.12'");
+    }
+
 } else {
     // Up-to-date
 }

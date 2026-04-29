@@ -61,6 +61,13 @@ if ($_SERVER['REQUEST_METHOD'] == "POST") {
      */
     if (isset($_POST['password_reset_email_request'])) {
 
+        // Per-IP rate limit on password reset email requests. Configurable
+        // via Admin → Security settings. Stops mailbox-bombing the same
+        // address (or many addresses) from a single source.
+        require_once "../includes/rate_limit.php";
+        $session_ip = $ip;
+        rateLimitCheckScope('pwreset', $mysqli);
+
         $email = sanitizeInput($_POST['email']);
 
         $sql = mysqli_query($mysqli, "SELECT contact_id, contact_name, user_email, contact_client_id, user_id FROM users LEFT JOIN contacts ON user_id = contact_user_id WHERE user_email = '$email' AND user_auth_method = 'local' AND user_type = 2 AND user_status = 1 AND user_archived_at IS NULL LIMIT 1");

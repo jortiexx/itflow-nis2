@@ -47,23 +47,11 @@ $session_user_agent = sanitizeInput($_SERVER['HTTP_USER_AGENT'] ?? '');
 // IMPORTANT (Option B support): ensure this exists in this scope so logAction() can use it
 $session_user_id = intval($_SESSION['user_id'] ?? 0);
 
-$row = mysqli_fetch_assoc(mysqli_query(
-    $mysqli,
-    "SELECT COUNT(log_id) AS failed_login_count
-     FROM logs
-     WHERE log_ip = '$session_ip'
-       AND log_type = 'Login'
-       AND log_action = 'Failed'
-       AND log_created_at > (NOW() - INTERVAL 10 MINUTE)"
-));
-$failed_login_count = intval($row['failed_login_count']);
-
-if ($failed_login_count >= 15) {
-    // Make sure global session_user_id is not required here (will be 0 anyway)
-    logAction("Login", "Blocked", "$session_ip was blocked access to login due to IP lockout");
-    header("HTTP/1.1 429 Too Many Requests");
-    exit("<h2>$config_app_name</h2>Your IP address has been blocked due to repeated failed login attempts. Please try again later. <br><br>This action has been logged.");
-}
+// Per-IP login throttle. Configurable via Admin → Security settings;
+// rate_limit.php's rateLimitCheckScope() emits HTTP 429 + Retry-After
+// when the threshold is exceeded and writes a "Blocked" log entry.
+require_once __DIR__ . '/includes/rate_limit.php';
+rateLimitCheckScope('login', $mysqli);
 
 // Settings
 $sql_settings = mysqli_query($mysqli, "
