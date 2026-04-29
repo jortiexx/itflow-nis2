@@ -26,7 +26,7 @@ $default_role_id  = intval($row['config_agent_sso_default_role_id'] ?? 0);
 $base = ($config_https_only ? 'https://' : 'http://') . $config_base_url;
 $auto_redirect_uri = "$base/agent/login_entra_callback.php";
 
-$roles = mysqli_query($mysqli, "SELECT user_role_id, user_role_name FROM user_roles ORDER BY user_role_name ASC");
+$roles = mysqli_query($mysqli, "SELECT role_id, role_name FROM user_roles WHERE role_archived_at IS NULL ORDER BY role_name ASC");
 
 ?>
 <div class="card card-dark">
@@ -149,8 +149,8 @@ $roles = mysqli_query($mysqli, "SELECT user_role_id, user_role_name FROM user_ro
                     <select class="form-control" name="agent_sso_default_role_id">
                         <option value="0">- Select role -</option>
                         <?php while ($r = mysqli_fetch_assoc($roles)) { ?>
-                            <option value="<?= intval($r['user_role_id']) ?>" <?= ($default_role_id === intval($r['user_role_id'])) ? 'selected' : '' ?>>
-                                <?= nullable_htmlentities($r['user_role_name']) ?>
+                            <option value="<?= intval($r['role_id']) ?>" <?= ($default_role_id === intval($r['role_id'])) ? 'selected' : '' ?>>
+                                <?= nullable_htmlentities($r['role_name']) ?>
                             </option>
                         <?php } ?>
                     </select>
