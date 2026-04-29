@@ -6,6 +6,9 @@
 
 ob_start();
 
+// check_login.php expects config + functions to be loaded already.
+require_once __DIR__ . '/../../config.php';
+require_once __DIR__ . '/../../functions.php';
 require_once __DIR__ . '/../../includes/check_login.php';
 require_once __DIR__ . '/../../includes/webauthn.php';
 require_once __DIR__ . '/../../includes/security_audit.php';
