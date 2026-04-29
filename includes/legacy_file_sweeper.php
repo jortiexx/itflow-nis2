@@ -25,39 +25,76 @@
 if (!function_exists('sweepLegacyFilesForClient')) {
 
     /**
+     * Has the schema been migrated to the version that introduced the
+     * file-encryption columns (DB 2.4.4.10)? If not, every helper in this
+     * file is a no-op — there's nothing for us to sweep yet.
+     *
+     * Cached in a static after the first probe.
+     */
+    function legacyFileSweeperSchemaReady(mysqli $mysqli): bool
+    {
+        static $ready = null;
+        if ($ready !== null) return $ready;
+        try {
+            $r = mysqli_fetch_assoc(mysqli_query($mysqli,
+                "SHOW COLUMNS FROM files LIKE 'file_encrypted'"));
+            if (!$r) {
+                $ready = false;
+                return $ready;
+            }
+            $r2 = mysqli_fetch_assoc(mysqli_query($mysqli,
+                "SHOW COLUMNS FROM client_master_keys LIKE 'legacy_files_swept_at'"));
+            $ready = (bool)$r2;
+        } catch (Throwable $e) {
+            $ready = false;
+        }
+        return $ready;
+    }
+
+    /**
      * How many plaintext files are still on disk that THIS user can sweep
      * (admin = all clients; user with grants = granted clients only;
      * user without any grants = unrestricted default).
      *
      * Cheap COUNT — used by the migration UI to draw the progress bar
      * and by load_user_session.php to decide whether to redirect.
+     *
+     * Returns 0 (and never errors out) if the schema is not yet migrated
+     * to 2.4.4.11 — the redirect therefore won't fire on a stale DB.
      */
     function legacyFilesPendingForUser(mysqli $mysqli, int $user_id, bool $is_admin): int
     {
+        if (!legacyFileSweeperSchemaReady($mysqli)) {
+            return 0;
+        }
         $user_id = intval($user_id);
 
-        $access_clause = '';
-        if (!$is_admin) {
-            $r = mysqli_fetch_assoc(mysqli_query($mysqli,
-                "SELECT COUNT(*) AS n FROM user_client_permissions
-                 WHERE user_id = $user_id"));
-            if ($r && intval($r['n']) > 0) {
-                $access_clause = "AND files.file_client_id IN (
-                    SELECT client_id FROM user_client_permissions
-                    WHERE user_id = $user_id
-                )";
+        try {
+            $access_clause = '';
+            if (!$is_admin) {
+                $r = mysqli_fetch_assoc(mysqli_query($mysqli,
+                    "SELECT COUNT(*) AS n FROM user_client_permissions
+                     WHERE user_id = $user_id"));
+                if ($r && intval($r['n']) > 0) {
+                    $access_clause = "AND files.file_client_id IN (
+                        SELECT client_id FROM user_client_permissions
+                        WHERE user_id = $user_id
+                    )";
+                }
             }
-        }
 
-        $r = mysqli_fetch_assoc(mysqli_query($mysqli,
-            "SELECT COUNT(*) AS n
-             FROM files
-             LEFT JOIN client_master_keys cmk ON cmk.client_id = files.file_client_id
-             WHERE files.file_encrypted = 0
-               AND files.file_archived_at IS NULL
-               AND (cmk.legacy_files_swept_at IS NULL OR cmk.client_id IS NULL)
-               $access_clause"));
-        return $r ? intval($r['n']) : 0;
+            $r = mysqli_fetch_assoc(mysqli_query($mysqli,
+                "SELECT COUNT(*) AS n
+                 FROM files
+                 LEFT JOIN client_master_keys cmk ON cmk.client_id = files.file_client_id
+                 WHERE files.file_encrypted = 0
+                   AND files.file_archived_at IS NULL
+                   AND (cmk.legacy_files_swept_at IS NULL OR cmk.client_id IS NULL)
+                   $access_clause"));
+            return $r ? intval($r['n']) : 0;
+        } catch (Throwable $e) {
+            return 0;
+        }
     }
 
 
@@ -73,6 +110,9 @@ if (!function_exists('sweepLegacyFilesForClient')) {
         $client_id = intval($client_id);
         if ($client_id <= 0) {
             return ['encrypted' => 0, 'failed' => 0, 'remaining' => 0, 'completed' => false, 'reason' => 'invalid_client'];
+        }
+        if (!legacyFileSweeperSchemaReady($mysqli)) {
+            return ['encrypted' => 0, 'failed' => 0, 'remaining' => 0, 'completed' => false, 'reason' => 'schema_not_migrated'];
         }
 
         require_once __DIR__ . '/file_storage.php';
@@ -278,6 +318,10 @@ if (!function_exists('sweepLegacyFilesForClient')) {
      */
     function sweepLegacyFilesOpportunistic(mysqli $mysqli, int $session_user_id, bool $session_is_admin, float $time_budget_seconds = 1.0): array
     {
+        if (!legacyFileSweeperSchemaReady($mysqli)) {
+            return ['encrypted' => 0, 'reason' => 'schema_not_migrated'];
+        }
+
         // Find a client that still has plaintext files. Restrict to
         // clients the user can access:
         //   - admin: any client

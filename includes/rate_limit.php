@@ -48,14 +48,22 @@ if (!function_exists('rateLimitConfig')) {
             'scopes'  => RATELIMIT_DEFAULTS,
         ];
 
-        $row = @mysqli_fetch_assoc(mysqli_query($mysqli,
-            "SELECT config_ratelimit_enabled,
-                    config_ratelimit_login_max, config_ratelimit_login_window,
-                    config_ratelimit_vault_max, config_ratelimit_vault_window,
-                    config_ratelimit_sso_max, config_ratelimit_sso_window,
-                    config_ratelimit_api_max, config_ratelimit_api_window,
-                    config_ratelimit_pwreset_max, config_ratelimit_pwreset_window
-             FROM settings WHERE company_id = 1 LIMIT 1"));
+        // Mid-upgrade safe: if the columns don't exist yet (DB pre-2.4.4.12)
+        // mysqli_report can throw mysqli_sql_exception. Catch and fall back
+        // to baked-in defaults so the app keeps working.
+        $row = null;
+        try {
+            $row = mysqli_fetch_assoc(mysqli_query($mysqli,
+                "SELECT config_ratelimit_enabled,
+                        config_ratelimit_login_max, config_ratelimit_login_window,
+                        config_ratelimit_vault_max, config_ratelimit_vault_window,
+                        config_ratelimit_sso_max, config_ratelimit_sso_window,
+                        config_ratelimit_api_max, config_ratelimit_api_window,
+                        config_ratelimit_pwreset_max, config_ratelimit_pwreset_window
+                 FROM settings WHERE company_id = 1 LIMIT 1"));
+        } catch (Throwable $e) {
+            return $cache;
+        }
         if (!$row) {
             return $cache;
         }
