@@ -130,7 +130,8 @@ if ($item_type == "Document") {
 
     $doc_title = nullable_htmlentities($doc_row['document_name']);
     $doc_title_escaped = sanitizeInput($doc_row['document_name']);
-    $doc_content = $purifier->purify($doc_row['document_content']);
+    // Phase 13 (C): document_content may be encrypted at rest.
+    $doc_content = $purifier->purify(decryptOptionalField($doc_row['document_content'], intval($doc_row['document_client_id'] ?? $client_id)));
 
     echo "<h3>$doc_title</h3>";
     echo "<div class='prettyContent'>$doc_content</div>";

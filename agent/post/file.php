@@ -6,6 +6,9 @@
 
 defined('FROM_POST_HANDLER') || die("Direct file access is not allowed");
 
+require_once __DIR__ . '/../../includes/file_storage.php';
+require_once __DIR__ . '/../../includes/security_audit.php';
+
 if (isset($_POST['upload_files'])) {
 
     validateCSRFToken($_POST['csrf_token']);
@@ -58,31 +61,110 @@ if (isset($_POST['upload_files'])) {
             $file_mime_type  = sanitizeInput($single_file['type']);
             $file_size       = intval($single_file['size']);
 
-            // Define destination path and move the uploaded file
+            // Phase 13 (F): server-side MIME validation. Reject files where
+            // the detected MIME type doesn't match the claimed extension —
+            // a renamed-EXE-as-PNG scenario.
+            $mime_check = fileVerifyMimeMatchesExtension($file_tmp_path, $file_extension);
+            if (!$mime_check['ok']) {
+                securityAudit('file.upload.mime_rejected', [
+                    'user_id'     => $session_user_id,
+                    'target_type' => 'client',
+                    'target_id'   => $client_id,
+                    'metadata'    => [
+                        'file_name' => $file_name,
+                        'extension' => $file_extension,
+                        'declared'  => $file_mime_type,
+                        'detected'  => $mime_check['detected'] ?? null,
+                        'reason'    => $mime_check['reason'] ?? 'mime_mismatch',
+                    ],
+                ]);
+                flash_alert("File <strong>$file_name</strong> rejected: detected type does not match extension.", 'error');
+                continue;
+            }
+            $file_mime_verified = (string)($mime_check['detected'] ?? $file_mime_type);
+
+            // Read plaintext bytes once: hash, then encrypt for at-rest storage.
+            $plaintext_bytes = file_get_contents($file_tmp_path);
+            if ($plaintext_bytes === false) {
+                flash_alert("Could not read uploaded file <strong>$file_name</strong>.", 'error');
+                continue;
+            }
+            $file_size      = strlen($plaintext_bytes);
+            $file_sha256_bin = fileHashSha256($plaintext_bytes);
+
+            // Phase 13 (B): encrypt at rest with the per-client master key.
+            // If the client has no master yet, ensureClientMasterKey (called
+            // from inside encryptFileAtRest) will create one.
+            $enc = encryptFileAtRest($plaintext_bytes, $client_id, $mysqli);
+            sodium_memzero($plaintext_bytes);
+
+            // Define destination path
             $upload_file_dir = $client_dir . "/";
             $dest_path       = $upload_file_dir . $file_reference_name;
 
-            if (!move_uploaded_file($file_tmp_path, $dest_path)) {
-                flash_alert('Error moving file to upload directory. Please ensure the directory is writable.', 'error');
-                continue; // Skip processing this file
+            if ($enc === null) {
+                // Could not derive the client master (e.g. SSO user with no
+                // grant yet on a brand-new client). Fall back to plaintext
+                // on disk so the upload still works, but flag it.
+                if (!move_uploaded_file($file_tmp_path, $dest_path)) {
+                    flash_alert('Error moving file to upload directory. Please ensure the directory is writable.', 'error');
+                    continue;
+                }
+                $file_encrypted_flag = 0;
+                $iv_bin  = null;
+                $tag_bin = null;
+                securityAudit('file.upload.encryption_unavailable', [
+                    'user_id'     => $session_user_id,
+                    'target_type' => 'client',
+                    'target_id'   => $client_id,
+                    'metadata'    => ['file_name' => $file_name],
+                ]);
+            } else {
+                // Write the ciphertext to disk in place of the uploaded file.
+                if (file_put_contents($dest_path, $enc['ciphertext']) === false) {
+                    flash_alert('Error writing encrypted file. Please ensure the directory is writable.', 'error');
+                    continue;
+                }
+                @unlink($file_tmp_path); // remove the plaintext tmp copy
+                $file_encrypted_flag = 1;
+                $iv_bin  = $enc['iv'];
+                $tag_bin = $enc['tag'];
             }
 
             // Use the file reference (without extension) as the file hash
             $file_hash = strstr($file_reference_name, '.', true) ?: $file_reference_name;
 
-            // Insert file metadata into the database
-            $query = "INSERT INTO files SET
-                        file_reference_name = '$file_reference_name',
-                        file_name = '$file_name',
-                        file_description = '$description',
-                        file_ext = '$file_extension',
-                        file_mime_type = '$file_mime_type',
-                        file_size = $file_size,
-                        file_created_by = $session_user_id,
-                        file_folder_id = $folder_id,
-                        file_client_id = $client_id";
-            mysqli_query($mysqli, $query);
+            // Insert file metadata via prepared statement (binary-safe for
+            // VARBINARY columns iv/tag/sha256).
+            $stmt = mysqli_prepare($mysqli,
+                "INSERT INTO files (
+                    file_reference_name, file_name, file_description, file_ext,
+                    file_mime_type, file_mime_verified, file_size,
+                    file_created_by, file_folder_id, file_client_id,
+                    file_encrypted, file_encryption_iv, file_encryption_tag,
+                    file_sha256
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            mysqli_stmt_bind_param(
+                $stmt,
+                'ssssssiiiiisss',
+                $file_reference_name,
+                $file_name,
+                $description,
+                $file_extension,
+                $file_mime_type,
+                $file_mime_verified,
+                $file_size,
+                $session_user_id,
+                $folder_id,
+                $client_id,
+                $file_encrypted_flag,
+                $iv_bin,
+                $tag_bin,
+                $file_sha256_bin
+            );
+            mysqli_stmt_execute($stmt);
             $file_id = mysqli_insert_id($mysqli);
+            mysqli_stmt_close($stmt);
 
             if ($contact_id) {
                 mysqli_query($mysqli,"INSERT INTO contact_files SET contact_id = $contact_id, file_id = $file_id");
