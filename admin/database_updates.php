@@ -4572,6 +4572,39 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.7'");
     }
 
+    // 2.4.4.7 -> 2.4.4.8: per-user X25519 keypairs + per-user client grants.
+    // True cryptographic compartmentalisation: each user has their own
+    // keypair (private wrapped under their unlock factor). Client master
+    // keys are sealed-box encrypted to each authorised user's public key.
+    // A compromised user can only decrypt their own grants.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.7') {
+        mysqli_query($mysqli, "ALTER TABLE `users`
+            ADD COLUMN `user_pubkey` VARCHAR(128) NULL DEFAULT NULL,
+            ADD COLUMN `user_privkey_wrapped` VARCHAR(512) NULL DEFAULT NULL");
+
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `user_client_grants` (
+                `grant_id` INT NOT NULL AUTO_INCREMENT,
+                `user_id` INT NOT NULL,
+                `client_id` INT NOT NULL,
+                `wrapped_client_key` VARCHAR(512) NOT NULL,
+                `granted_at` DATETIME NOT NULL,
+                `granted_by_user_id` INT NULL DEFAULT NULL,
+                `last_used_at` DATETIME NULL DEFAULT NULL,
+                PRIMARY KEY (`grant_id`),
+                UNIQUE KEY `uniq_user_client` (`user_id`, `client_id`),
+                KEY `idx_user` (`user_id`),
+                KEY `idx_client` (`client_id`),
+                CONSTRAINT `fk_user_client_grants_user`
+                    FOREIGN KEY (`user_id`) REFERENCES `users`(`user_id`) ON DELETE CASCADE,
+                CONSTRAINT `fk_user_client_grants_client`
+                    FOREIGN KEY (`client_id`) REFERENCES `clients`(`client_id`) ON DELETE CASCADE
+            ) ENGINE=InnoDB
+        ");
+
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.8'");
+    }
+
 } else {
     // Up-to-date
 }

@@ -285,11 +285,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                         // unlockUserMasterKey() handles v2 (AES-256-GCM + Argon2id) with v1 fallback and lazy migration.
                         $agent_master_key = unlockUserMasterKey($agentRow, $password, $mysqli);
 
+                        // Phase 10: also backfill keypair + grants and stash privkey
+                        $agent_privkey = null;
+                        if ($agent_master_key !== null) {
+                            $agent_privkey = backfillUserCryptoMaterial(
+                                intval($agentRow['user_id']), $password, $agent_master_key, $mysqli
+                            );
+                        }
+
                         $_SESSION['pending_dual_login'] = [
                             'email'            => $email,
                             'agent_user_id'    => intval($agentRow['user_id']),
                             'client_user_id'   => intval($clientRow['user_id']),
                             'agent_master_key' => $agent_master_key, // may be null
+                            'agent_privkey'    => $agent_privkey,    // may be null
                             'token'            => $pending_token,
                             'created'          => time()
                         ];
@@ -444,12 +453,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
 
                         // Setup encryption session key WITHOUT PASSWORD IN SESSION
                         $site_encryption_master_key = null;
+                        $site_user_privkey          = null;
 
                         if ($is_mfa_step) {
                             // Step 3: MFA submit
                             $sess = $pending_mfa ?? ($_SESSION['pending_mfa_login'] ?? null);
                             if ($sess && !empty($sess['agent_master_key'])) {
                                 $site_encryption_master_key = $sess['agent_master_key'];
+                            }
+                            if ($sess && !empty($sess['agent_privkey'])) {
+                                $site_user_privkey = $sess['agent_privkey'];
                             }
 
                         } elseif ($is_role_step) {
@@ -458,15 +471,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                             if ($sess && !empty($sess['agent_master_key'])) {
                                 $site_encryption_master_key = $sess['agent_master_key'];
                             }
+                            if ($sess && !empty($sess['agent_privkey'])) {
+                                $site_user_privkey = $sess['agent_privkey'];
+                            }
 
                         } else {
                             // Step 1: initial login (password available in this request)
                             // unlockUserMasterKey() handles v2 with v1 fallback and lazy migration.
                             $site_encryption_master_key = unlockUserMasterKey($selectedRow, $password, $mysqli);
+                            if ($site_encryption_master_key !== null) {
+                                $site_user_privkey = backfillUserCryptoMaterial(
+                                    $user_id, $password, $site_encryption_master_key, $mysqli
+                                );
+                            }
                         }
 
                         if (!empty($site_encryption_master_key)) {
                             generateUserSessionKey($site_encryption_master_key);
+                        }
+                        if (!empty($site_user_privkey)) {
+                            // Phase 10: per-user privkey lives alongside the master key
+                            // in the session (wrapped under the same session_key cookie).
+                            pushUserPrivkeyToSession($site_user_privkey);
                         }
 
                         // NOW safe to clear pending sessions AFTER we used them
@@ -488,21 +514,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                         // If we arrived here from role-choice step, the agent master key may be in cached pending_dual
                         // If we arrived from initial login step, decrypt now (password in memory) and store master key.
                         $agent_master_key = null;
+                        $agent_privkey    = null;
 
                         if ($is_role_step) {
                             $sess = $pending_dual ?? ($_SESSION['pending_dual_login'] ?? null);
                             if ($sess && array_key_exists('agent_master_key', $sess)) {
                                 $agent_master_key = $sess['agent_master_key'];
                             }
+                            if ($sess && array_key_exists('agent_privkey', $sess)) {
+                                $agent_privkey = $sess['agent_privkey'];
+                            }
                         } else {
                             // unlockUserMasterKey() handles v2 with v1 fallback and lazy migration.
                             $agent_master_key = unlockUserMasterKey($selectedRow, $password, $mysqli);
+                            // Phase 10: backfill keypair material while password in scope.
+                            if ($agent_master_key !== null) {
+                                $agent_privkey = backfillUserCryptoMaterial(
+                                    $user_id, $password, $agent_master_key, $mysqli
+                                );
+                            }
                         }
 
                         $_SESSION['pending_mfa_login'] = [
                             'email'            => $user_email,
                             'agent_user_id'    => $user_id,
                             'agent_master_key' => $agent_master_key, // may be null
+                            'agent_privkey'    => $agent_privkey,    // may be null (phase 10)
                             'token'            => $pending_mfa_token,
                             'created'          => time()
                         ];

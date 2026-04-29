@@ -2009,6 +2009,28 @@ CREATE TABLE `security_audit_log` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `user_client_grants` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `user_client_grants`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_client_grants` (
+  `grant_id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `client_id` int(11) NOT NULL,
+  `wrapped_client_key` varchar(512) NOT NULL,
+  `granted_at` datetime NOT NULL,
+  `granted_by_user_id` int(11) DEFAULT NULL,
+  `last_used_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`grant_id`),
+  UNIQUE KEY `uniq_user_client` (`user_id`,`client_id`),
+  KEY `idx_user` (`user_id`),
+  KEY `idx_client` (`client_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `client_master_keys` (NIS2 fork)
 --
 
@@ -2994,6 +3016,8 @@ CREATE TABLE `users` (
   `user_specific_encryption_ciphertext_v2` varchar(512) DEFAULT NULL,
   `user_entra_oid` varchar(64) DEFAULT NULL,
   `user_force_webauthn` tinyint(1) NOT NULL DEFAULT 0,
+  `user_pubkey` varchar(128) DEFAULT NULL,
+  `user_privkey_wrapped` varchar(512) DEFAULT NULL,
   `user_php_session` varchar(255) DEFAULT NULL,
   `user_extension_key` varchar(18) DEFAULT NULL,
   `user_created_at` datetime NOT NULL DEFAULT current_timestamp(),

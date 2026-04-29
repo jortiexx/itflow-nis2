@@ -123,6 +123,9 @@ $_SESSION['logged']     = true;
 if (!empty($pending['agent_master_key'])) {
     generateUserSessionKey($pending['agent_master_key']);
 }
+if (!empty($pending['agent_privkey'])) {
+    pushUserPrivkeyToSession($pending['agent_privkey']);
+}
 
 unset($_SESSION['pending_mfa_login']);
 unset($_SESSION['pending_dual_login']);

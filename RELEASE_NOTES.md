@@ -2,7 +2,90 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 9: Per-client master keys
+## Unreleased — Phase 10: Per-user keypair compartmentalisation
+
+True cryptographic compartmentalisation. Each user gets their own X25519 keypair. The private key is wrapped under their unlock factor (Argon2id KEK from password). Client master keys are sealed-box encrypted to each authorised user's public key, stored in `user_client_grants`. **A compromised user can decrypt only the clients for which a grant exists for them in the database — other clients' grants are sealed under other users' public keys and unopenable.**
+
+This is what the original NIS2 Art. 21(2)(i) blast-radius reduction asked for and what phase 9 stopped short of.
+
+### Schema migration `2.4.4.7 → 2.4.4.8`
+- `users.user_pubkey` (varchar 128) — base64 X25519 public key
+- `users.user_privkey_wrapped` (varchar 512) — base64 of `salt(16) || cryptoEncryptV2(privkey, Argon2id(password, salt))`
+- New table `user_client_grants(user_id, client_id, wrapped_client_key, granted_at, granted_by_user_id, last_used_at)` — one row per authorised (user, client) pair, unique constraint, FK-cascaded on user and client.
+
+### Cryptographic helpers (`functions.php`)
+- `userGenerateKeypairForPassword($password)` — generate X25519 keypair, wrap privkey under Argon2id KEK.
+- `userUnwrapPrivkey($wrapped, $password)` — recover privkey from wrapping.
+- `userRewrapPrivkey($wrapped, $old_pw, $new_pw)` — preserve keypair across password change.
+- `wrapClientKeyForUser($client_master, $recipient_pubkey)` — sealed-box (anonymous-sender) using libsodium `crypto_box_seal`.
+- `unwrapClientKeyFromGrant($wrapped, $privkey)` — `crypto_box_seal_open`.
+- `pushUserPrivkeyToSession($privkey)` / `userPrivkeyFromSession()` — session-level wrap of privkey alongside the master key, using the same `user_encryption_session_key` cookie.
+- `backfillUserCryptoMaterial($user_id, $password, $shared_master, $mysqli)` — at login: ensure keypair exists; for every client the user has app-layer access to, materialise a per-user grant. Idempotent and lazy.
+- `getClientMasterKeyViaGrant($client_id, $mysqli)` — preferred unwrap path; returns null if no grant.
+- `materialiseGrantForCurrentUser($client_id, $client_master, $mysqli)` — opportunistic grant write when shared-master fallback is used during writes.
+- `adminGrantClientToUser($admin_id, $target_user_id, $client_id, $mysqli)` — admin-driven grant. Requires the target user to have a public key (i.e. has logged in at least once since the migration).
+- `adminRevokeClientGrant($target_user_id, $client_id, $mysqli)` — destroys the grant; user can no longer decrypt that client via the compartmentalised path.
+
+### Login flow (`login.php`)
+- After `unlockUserMasterKey()` succeeds, `backfillUserCryptoMaterial()` runs while the password is in scope. The unwrapped privkey is stashed in `pending_dual_login` / `pending_mfa_login` (alongside `agent_master_key`) and ultimately `pushUserPrivkeyToSession()`'d at the success branch.
+- `login_webauthn_verify.php` also pushes the privkey to session after WebAuthn 2FA succeeds.
+
+### Decrypt path
+`decryptCredentialEntry($ct, $client_id)` for v3 ciphertexts now:
+1. Tries `getClientMasterKeyViaGrant($client_id)` — the compartmentalised path.
+2. Falls back to `ensureClientMasterKey($client_id)` — the legacy shared-master path during the migration window.
+
+Once all users have logged in once post-migration, every authorised access goes through the grant path.
+
+### Encrypt path
+`encryptCredentialEntry($pt, $client_id)` similarly prefers the grant path. When the fallback path is used, `materialiseGrantForCurrentUser()` opportunistically writes a grant for the current user so subsequent reads use the compartmentalised path immediately.
+
+### Password change / admin reset
+- Self-change in `agent/user/post/profile.php`: drops `user_pubkey` and `user_privkey_wrapped` (the privkey was wrapped under the OLD password), and deletes all rows in `user_client_grants` for that user. Lazy backfill at next login regenerates everything from scratch using `user_client_permissions`.
+- Admin reset in `admin/post/users.php`: same treatment.
+- User archive in `admin/post/users.php`: clears keypair material and deletes grants alongside the existing master-key-clear.
+
+### Self-test (`scripts/keypair_self_test.php`)
+15 offline tests, all passing. Notably:
+- **Bob's privkey cannot open Alice's grant**, even though both grants wrap the same client master key under different recipients' public keys. This is the compartmentalisation property the phase delivers.
+- Tamper detection on the sealed box.
+- Password change rewrap preserves the keypair (round-trip under the new password).
+
+### Cumulative self-tests
+98 / 0 failures across 9 suites: crypto 20, Entra SSO 11, vault PIN 5, vault PRF 7, vault enrolment 6, audit log 6, WebAuthn 15, client master keys 13, keypair 15.
+
+### Compromise model after phase 10
+
+| Adversary | Outcome |
+|-----------|---------|
+| Compromised agent X with vault unlocked | Can decrypt clients they have a grant for. **Cannot decrypt other clients** — those grants are sealed under other users' public keys. |
+| Compromised agent X with no grants | Can fall back to shared-master path (legacy). After the migration is complete and the shared-master wrapping is dropped (future phase), this fallback closes. |
+| Database leak | Wrappings are present, but each privkey is Argon2id-protected by its user's password. Per-user brute-force required; one cracked password gives only that user's grants. |
+| Stolen unlocked workstation | Layer 4 still holds. Vault is unlocked → privkey is in session → grants can be opened. Unchanged from earlier phases. |
+
+### Operator action required
+1. Run database migration: `Admin → Update → Update Database` (or `php scripts/update_cli.php --update_db`).
+2. Run the self-test: `php scripts/keypair_self_test.php` should report `15 tests, 0 failures`.
+3. Have all agents log in once via password (or via password followed by MFA). The first such login generates their keypair and back-fills grants for every client they have app-layer access to.
+4. After every active agent has logged in: verify with
+   ```sql
+   SELECT user_id, user_email,
+          CASE WHEN user_pubkey IS NULL THEN 'no keypair yet' ELSE 'migrated' END AS keypair,
+          (SELECT COUNT(*) FROM user_client_grants g WHERE g.user_id = u.user_id) AS grants
+   FROM users u WHERE user_status = 1 AND user_archived_at IS NULL;
+   ```
+   All active agents should show `migrated` and a non-zero grant count.
+5. (Future, deferred) Once the migration is complete, drop the shared-master fallback by clearing `client_master_keys.wrapped_under_shared`. After that point, a user without a grant truly cannot decrypt that client's data.
+
+### Known limitations
+- **SSO + PIN / SSO + PRF unlock paths**: the privkey is wrapped only under the password, not under the PIN or PRF KEK. Users who unlock via PIN/PRF get the master key in session but not the privkey, so they fall back to the shared-master path (no compartmentalisation for them yet). This is the next-most-important follow-up — wrap a copy of the privkey under each enrolled vault unlock method. Schema columns are already there (`user_vault_unlock_methods.salt` / `wrapped_master_key` could be extended) but it's a separate phase.
+- **API keys** still use the legacy shared-master path. API consumers do not get compartmentalisation in this phase.
+- **Admin grant management UI**: not added in this phase. The lazy backfill at user login covers most operational cases. Explicit admin grant operations are exposed via `adminGrantClientToUser()` / `adminRevokeClientGrant()` for future UI work.
+
+### Forward compatibility
+The shared-master fallback is a deliberate transition aid and not a permanent feature. Once you have confirmed every active agent has a populated `user_pubkey` and grants for all their clients, you can run a one-off cleanup (`UPDATE client_master_keys SET wrapped_under_shared = NULL`) to remove the escrow. After that, only the per-user grant path works — full compartmentalisation enforced.
+
+## v0.10.0-nis2-per-client — Phase 9: Per-client master keys
 
 Each client now has its own master key. New credentials are encrypted under the client's key (v3 ciphertext format), wrapped under the existing shared master key. This enables per-client key rotation, per-client secure delete (destroy a client's key → all their credentials become unrecoverable), and forensic separation in incident notifications.
 

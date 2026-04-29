@@ -544,7 +544,17 @@ function decryptCredentialEntry($credential_password_ciphertext, $client_id = nu
             error_log('decryptCredentialEntry: v3 ciphertext without client_id');
             return false;
         }
-        $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+
+        // Phase 10: prefer the user's per-user grant over the shared-master
+        // fallback. A grant means cryptographic compartmentalisation —
+        // this user really has the right to read this client's data.
+        $client_master = getClientMasterKeyViaGrant(intval($client_id), $mysqli);
+        if ($client_master === null) {
+            // Fallback during migration: users without a grant yet still
+            // need to read credentials. ensureClientMasterKey uses the
+            // session shared master key.
+            $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+        }
         if ($client_master === null) {
             return false;
         }
@@ -600,9 +610,21 @@ function encryptCredentialEntry($credential_password_cleartext, $client_id = nul
 {
     global $mysqli;
 
-    // v3 path: per-client master key (lazy-creates the key on first use)
+    // v3 path: per-client master key
     if ($client_id && intval($client_id) > 0) {
-        $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+        // Phase 10: prefer the user's per-user grant.
+        $client_master = getClientMasterKeyViaGrant(intval($client_id), $mysqli);
+        if ($client_master === null) {
+            // Migration fallback: lazy-create / fetch via shared-master.
+            $client_master = ensureClientMasterKey(intval($client_id), $mysqli);
+            if ($client_master !== null) {
+                // We just minted (or fetched via shared master). Take the
+                // opportunity to materialise a per-user grant for the
+                // current user so subsequent reads use the compartmentalised
+                // path.
+                materialiseGrantForCurrentUser(intval($client_id), $client_master, $mysqli);
+            }
+        }
         if ($client_master !== null) {
             return encryptCredentialEntryV3($credential_password_cleartext, $client_master);
         }
@@ -976,6 +998,403 @@ function decryptCredentialEntryV2(string $stored, #[\SensitiveParameter] string 
         return cryptoDecryptV2($blob, $key32);
     } finally {
         sodium_memzero($key32);
+    }
+}
+
+// =====================================================================
+// NIS2 fork phase 10: per-user X25519 keypairs + per-user client grants
+//
+// Each user owns a Curve25519 (X25519) keypair. Their public key is
+// readable by anyone (it lives in users.user_pubkey). Their private key
+// is wrapped under their unlock factor (Argon2id KEK from password) and
+// only they can unwrap it.
+//
+// Client master keys are stored once per client (existing client_master_keys
+// table from phase 9). Authorised users get a per-user grant: the client
+// master key sealed-box-encrypted to their public key, stored in
+// user_client_grants.
+//
+// Compromise model: a malicious / phished agent X can decrypt only the
+// client master keys for which a grant exists in user_client_grants
+// for X. Other clients' grants are sealed under other users' public
+// keys; X cannot open them with their private key.
+//
+// Migration is lazy. At first login post-migration:
+//   - generate keypair if missing
+//   - backfill grants for clients X has app-layer access to
+// During migration the legacy shared-master-key path (client_master_keys
+// .wrapped_under_shared) remains usable as a fallback so users without
+// grants yet can still read credentials.
+// =====================================================================
+
+if (!function_exists('userGenerateKeypairForPassword')) {
+
+    /**
+     * Generate a new X25519 keypair for a user, with the private key
+     * wrapped under an Argon2id KEK derived from $password.
+     *
+     * Returns ['pubkey_b64' => ..., 'wrapped_privkey_b64' => ...].
+     */
+    function userGenerateKeypairForPassword(#[\SensitiveParameter] string $password): array
+    {
+        $privkey = random_bytes(SODIUM_CRYPTO_BOX_SECRETKEYBYTES);   // 32 bytes
+        $pubkey  = sodium_crypto_box_publickey_from_secretkey($privkey);
+
+        $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
+        $kek  = deriveKekArgon2id($password, $salt);
+        $wrap = cryptoEncryptV2($privkey, $kek);
+        sodium_memzero($kek);
+        sodium_memzero($privkey);
+
+        return [
+            'pubkey_b64'         => base64_encode($pubkey),
+            'wrapped_privkey_b64'=> base64_encode($salt . $wrap),
+        ];
+    }
+
+    /**
+     * Unwrap a stored wrapped privkey using a password. Returns the raw
+     * 32-byte X25519 secret key on success, or null on auth/format
+     * failure.
+     */
+    function userUnwrapPrivkey(string $wrapped_b64, #[\SensitiveParameter] string $password): ?string
+    {
+        $raw = base64_decode($wrapped_b64, true);
+        if ($raw === false || strlen($raw) < SODIUM_CRYPTO_PWHASH_SALTBYTES + 30) {
+            return null;
+        }
+        $salt = substr($raw, 0, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+        $blob = substr($raw, SODIUM_CRYPTO_PWHASH_SALTBYTES);
+        try {
+            $kek = deriveKekArgon2id($password, $salt);
+            $privkey = cryptoDecryptV2($blob, $kek);
+            sodium_memzero($kek);
+            return $privkey;
+        } catch (Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Re-wrap a privkey under a new password. Used at password change
+     * so the user's keypair survives the rotation.
+     */
+    function userRewrapPrivkey(string $current_wrapped_b64, #[\SensitiveParameter] string $current_password, #[\SensitiveParameter] string $new_password): ?string
+    {
+        $privkey = userUnwrapPrivkey($current_wrapped_b64, $current_password);
+        if ($privkey === null) return null;
+
+        $salt = random_bytes(SODIUM_CRYPTO_PWHASH_SALTBYTES);
+        $kek  = deriveKekArgon2id($new_password, $salt);
+        try {
+            $wrap = cryptoEncryptV2($privkey, $kek);
+            return base64_encode($salt . $wrap);
+        } finally {
+            sodium_memzero($kek);
+            sodium_memzero($privkey);
+        }
+    }
+
+    /**
+     * Wrap a client master key for a recipient using their X25519 public
+     * key. Anyone holding $recipient_pubkey can do this; only the holder
+     * of the matching private key can unwrap.
+     */
+    function wrapClientKeyForUser(#[\SensitiveParameter] string $client_master, string $recipient_pubkey_b64): string
+    {
+        $pub = base64_decode($recipient_pubkey_b64, true);
+        if ($pub === false || strlen($pub) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) {
+            throw new RuntimeException('wrapClientKeyForUser: invalid recipient pubkey');
+        }
+        $sealed = sodium_crypto_box_seal($client_master, $pub);
+        return base64_encode($sealed);
+    }
+
+    /**
+     * Unwrap a client master key from a sealed box using the user's privkey.
+     * Returns null on bad ciphertext / wrong key.
+     */
+    function unwrapClientKeyFromGrant(string $wrapped_b64, #[\SensitiveParameter] string $privkey): ?string
+    {
+        $sealed = base64_decode($wrapped_b64, true);
+        if ($sealed === false) return null;
+        if (strlen($privkey) !== SODIUM_CRYPTO_BOX_SECRETKEYBYTES) return null;
+
+        $pub = sodium_crypto_box_publickey_from_secretkey($privkey);
+        $kp  = sodium_crypto_box_keypair_from_secretkey_and_publickey($privkey, $pub);
+        try {
+            $opened = sodium_crypto_box_seal_open($sealed, $kp);
+            return $opened === false ? null : $opened;
+        } finally {
+            sodium_memzero($kp);
+        }
+    }
+
+    /**
+     * Push the user's privkey into the session, wrapped under the same
+     * session_key cookie that already wraps the master_key. Mirrors
+     * generateUserSessionKey but for the privkey side channel.
+     */
+    function pushUserPrivkeyToSession(#[\SensitiveParameter] string $privkey_raw): void
+    {
+        if (empty($_COOKIE['user_encryption_session_key'])) {
+            // generateUserSessionKey() must have been called already.
+            return;
+        }
+        $session_key = $_COOKIE['user_encryption_session_key'];
+        $iv = randomString();
+        $ct = openssl_encrypt($privkey_raw, 'aes-128-cbc', $session_key, 0, $iv);
+        if ($ct === false) return;
+        $_SESSION['user_privkey_session_ciphertext'] = $ct;
+        $_SESSION['user_privkey_session_iv']         = $iv;
+    }
+
+    /**
+     * Read the user's privkey out of the session if available.
+     */
+    function userPrivkeyFromSession(): ?string
+    {
+        if (empty($_SESSION['user_privkey_session_ciphertext'])
+            || empty($_SESSION['user_privkey_session_iv'])
+            || empty($_COOKIE['user_encryption_session_key'])) {
+            return null;
+        }
+        $pt = openssl_decrypt(
+            $_SESSION['user_privkey_session_ciphertext'],
+            'aes-128-cbc',
+            $_COOKIE['user_encryption_session_key'],
+            0,
+            $_SESSION['user_privkey_session_iv']
+        );
+        return ($pt === false || $pt === '') ? null : $pt;
+    }
+
+    /**
+     * Lazy-backfill: ensure $user_id has a keypair (generating one from
+     * $password if missing), then ensure they have user_client_grants
+     * rows for every client_master_key they have application-layer access
+     * to. Requires the just-unwrapped shared master key to lookup client
+     * master keys from the legacy wrapping during the transition.
+     *
+     * Returns the unwrapped privkey on success, null on failure.
+     */
+    function backfillUserCryptoMaterial(int $user_id, #[\SensitiveParameter] string $password, #[\SensitiveParameter] ?string $shared_master_key, mysqli $mysqli): ?string
+    {
+        $row = mysqli_fetch_assoc(mysqli_query(
+            $mysqli,
+            "SELECT user_pubkey, user_privkey_wrapped FROM users WHERE user_id = $user_id LIMIT 1"
+        ));
+        if (!$row) return null;
+
+        if (empty($row['user_pubkey']) || empty($row['user_privkey_wrapped'])) {
+            $kp = userGenerateKeypairForPassword($password);
+            $pub_e  = mysqli_real_escape_string($mysqli, $kp['pubkey_b64']);
+            $priv_e = mysqli_real_escape_string($mysqli, $kp['wrapped_privkey_b64']);
+            mysqli_query($mysqli,
+                "UPDATE users SET user_pubkey = '$pub_e', user_privkey_wrapped = '$priv_e' WHERE user_id = $user_id");
+            $row['user_pubkey']           = $kp['pubkey_b64'];
+            $row['user_privkey_wrapped']  = $kp['wrapped_privkey_b64'];
+        }
+
+        $privkey = userUnwrapPrivkey($row['user_privkey_wrapped'], $password);
+        if ($privkey === null) {
+            error_log("backfillUserCryptoMaterial: privkey unwrap failed for user_id=$user_id");
+            return null;
+        }
+
+        $pubkey_b64 = $row['user_pubkey'];
+
+        // Backfill grants for every client this user has access to. We use
+        // the same access query the rest of the app uses: if there are
+        // explicit user_client_permissions rows, those are the allowed
+        // clients; otherwise (admin or unrestricted), all non-archived
+        // clients are allowed.
+        $perm_rs = mysqli_query($mysqli,
+            "SELECT client_id FROM user_client_permissions WHERE user_id = $user_id");
+        $allowed_ids = [];
+        if ($perm_rs) {
+            while ($r = mysqli_fetch_assoc($perm_rs)) {
+                $allowed_ids[] = intval($r['client_id']);
+            }
+        }
+        if (empty($allowed_ids)) {
+            $rs = mysqli_query($mysqli,
+                "SELECT client_id FROM clients WHERE client_archived_at IS NULL");
+            if ($rs) {
+                while ($r = mysqli_fetch_assoc($rs)) $allowed_ids[] = intval($r['client_id']);
+            }
+        }
+
+        if (!empty($allowed_ids) && $shared_master_key !== null) {
+            $kek = expandMasterKeyToAes256($shared_master_key);
+            try {
+                foreach ($allowed_ids as $cid) {
+                    $exists = mysqli_fetch_assoc(mysqli_query($mysqli,
+                        "SELECT 1 FROM user_client_grants WHERE user_id = $user_id AND client_id = $cid LIMIT 1"));
+                    if ($exists) continue;
+
+                    $cmk_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+                        "SELECT wrapped_under_shared FROM client_master_keys WHERE client_id = $cid LIMIT 1"));
+                    if (!$cmk_row) continue;
+
+                    $cmk_blob = base64_decode($cmk_row['wrapped_under_shared'], true);
+                    if ($cmk_blob === false) continue;
+
+                    try {
+                        $client_master = cryptoDecryptV2($cmk_blob, $kek);
+                        $wrapped       = wrapClientKeyForUser($client_master, $pubkey_b64);
+                        sodium_memzero($client_master);
+                        $wrapped_e     = mysqli_real_escape_string($mysqli, $wrapped);
+                        mysqli_query($mysqli, "
+                            INSERT IGNORE INTO user_client_grants
+                            SET user_id = $user_id, client_id = $cid,
+                                wrapped_client_key = '$wrapped_e',
+                                granted_at = NOW(),
+                                granted_by_user_id = NULL
+                        ");
+                    } catch (Throwable $e) {
+                        error_log("grant backfill failed for user $user_id client $cid: " . $e->getMessage());
+                    }
+                }
+            } finally {
+                sodium_memzero($kek);
+            }
+        }
+
+        return $privkey;
+    }
+
+    /**
+     * After we obtain a client master key via the shared-master fallback,
+     * write a per-user grant for the CURRENT user if we don't have one yet.
+     * Best-effort; failures are logged but never block the calling write.
+     */
+    function materialiseGrantForCurrentUser(int $client_id, #[\SensitiveParameter] string $client_master, mysqli $mysqli): void
+    {
+        if (empty($_SESSION['user_id'])) return;
+        $user_id = intval($_SESSION['user_id']);
+
+        $row = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT user_pubkey FROM users WHERE user_id = $user_id LIMIT 1"));
+        if (!$row || empty($row['user_pubkey'])) return;
+
+        $exists = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT 1 FROM user_client_grants WHERE user_id = $user_id AND client_id = $client_id LIMIT 1"));
+        if ($exists) return;
+
+        try {
+            $wrapped = wrapClientKeyForUser($client_master, $row['user_pubkey']);
+            $wrapped_e = mysqli_real_escape_string($mysqli, $wrapped);
+            mysqli_query($mysqli, "
+                INSERT IGNORE INTO user_client_grants
+                SET user_id = $user_id, client_id = $client_id,
+                    wrapped_client_key = '$wrapped_e',
+                    granted_at = NOW(),
+                    granted_by_user_id = NULL
+            ");
+        } catch (Throwable $e) {
+            error_log("materialiseGrantForCurrentUser: $user_id/$client_id: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Admin operation: grant another user access to a client. The admin
+     * must already have a usable client_master_key in hand (either via
+     * their own grant or via the shared-master fallback).
+     *
+     * If $target_user_id has no public key yet (i.e. has not logged in
+     * since the phase-10 migration), the grant cannot be materialised
+     * yet. The function returns false and the lazy backfill at the
+     * target's next login will create it.
+     */
+    function adminGrantClientToUser(int $admin_user_id, int $target_user_id, int $client_id, mysqli $mysqli): bool
+    {
+        $admin_user_id  = intval($admin_user_id);
+        $target_user_id = intval($target_user_id);
+        $client_id      = intval($client_id);
+        if ($admin_user_id <= 0 || $target_user_id <= 0 || $client_id <= 0) {
+            return false;
+        }
+
+        $tgt = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT user_pubkey FROM users WHERE user_id = $target_user_id LIMIT 1"));
+        if (!$tgt || empty($tgt['user_pubkey'])) {
+            return false;  // target hasn't logged in since the migration
+        }
+
+        $client_master = getClientMasterKeyViaGrant($client_id, $mysqli)
+                      ?? ensureClientMasterKey($client_id, $mysqli);
+        if ($client_master === null) {
+            return false;
+        }
+
+        try {
+            $wrapped = wrapClientKeyForUser($client_master, $tgt['user_pubkey']);
+            sodium_memzero($client_master);
+            $wrapped_e = mysqli_real_escape_string($mysqli, $wrapped);
+            mysqli_query($mysqli, "
+                INSERT INTO user_client_grants
+                SET user_id = $target_user_id, client_id = $client_id,
+                    wrapped_client_key = '$wrapped_e',
+                    granted_at = NOW(),
+                    granted_by_user_id = $admin_user_id
+                ON DUPLICATE KEY UPDATE
+                    wrapped_client_key = VALUES(wrapped_client_key),
+                    granted_at = VALUES(granted_at),
+                    granted_by_user_id = VALUES(granted_by_user_id)
+            ");
+            return true;
+        } catch (Throwable $e) {
+            error_log("adminGrantClientToUser failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Revoke a user's grant for a client. Used when an admin removes
+     * application-layer access. Wrapping is destroyed; user can no longer
+     * decrypt that client via the compartmentalised path.
+     */
+    function adminRevokeClientGrant(int $target_user_id, int $client_id, mysqli $mysqli): bool
+    {
+        $target_user_id = intval($target_user_id);
+        $client_id      = intval($client_id);
+        if ($target_user_id <= 0 || $client_id <= 0) return false;
+        mysqli_query($mysqli,
+            "DELETE FROM user_client_grants
+             WHERE user_id = $target_user_id AND client_id = $client_id");
+        return mysqli_affected_rows($mysqli) > 0;
+    }
+
+    /**
+     * Look up the client master key for a given client_id using the
+     * current user's grant. Returns null if the user has no grant
+     * (which should fall back to the shared-master path during migration).
+     */
+    function getClientMasterKeyViaGrant(int $client_id, mysqli $mysqli): ?string
+    {
+        if (empty($_SESSION['user_id'])) return null;
+        $user_id = intval($_SESSION['user_id']);
+
+        $privkey = userPrivkeyFromSession();
+        if ($privkey === null) return null;
+
+        $client_id = intval($client_id);
+        $row = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT wrapped_client_key FROM user_client_grants
+             WHERE user_id = $user_id AND client_id = $client_id LIMIT 1"));
+        if (!$row) return null;
+
+        $cmk = unwrapClientKeyFromGrant($row['wrapped_client_key'], $privkey);
+        sodium_memzero($privkey);
+
+        if ($cmk !== null) {
+            // best-effort last_used_at update; fire-and-forget
+            mysqli_query($mysqli,
+                "UPDATE user_client_grants SET last_used_at = NOW()
+                 WHERE user_id = $user_id AND client_id = $client_id");
+        }
+        return $cmk;
     }
 }
 
