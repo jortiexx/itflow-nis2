@@ -1,5 +1,25 @@
 <div id="top"></div>
 
+> **⚠ This is a security-hardened fork of [itflow-org/itflow](https://github.com/itflow-org/itflow)**, aligned with EU NIS2 cryptographic and access-control expectations. Upstream functionality is preserved; upstream is merged in periodically.
+>
+> **Differences from upstream:** Microsoft Entra ID SSO for agents, AES-256-GCM + Argon2id replacing AES-128-CBC + PBKDF2-100k, WebAuthn (FIDO2) as second factor, WebAuthn PRF for one-tap vault unlock, vault PIN as recovery fallback, tamper-evident hash-chained audit log, security response headers, per-IP rate limiting on credential endpoints.
+>
+> **Fork-specific docs:**
+> - [`SECURITY.md`](SECURITY.md) — threat model, supported versions, disclosure
+> - [`docs/architecture.md`](docs/architecture.md) — identity → vault → credential layering
+> - [`docs/crypto-policy.md`](docs/crypto-policy.md) — approved algorithms, key lifecycle (NIS2 Art. 21(2)(h))
+> - [`RELEASE_NOTES.md`](RELEASE_NOTES.md) — phase-by-phase changes
+>
+> **Switch a server from upstream to this fork:**
+> ```bash
+> cd /path/to/itflow
+> git remote set-url origin https://github.com/jortiexx/itflow-nis2.git
+> git fetch origin && git reset --hard origin/master
+> ```
+> Then `Admin → Update → Update Database` to run pending schema migrations.
+>
+> ---
+
 <!-- PROJECT SHIELDS -->
 [![Contributors][contributors-shield]][contributors-url]
 [![Stargazers][stars-shield]][stars-url]
