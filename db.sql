@@ -89,6 +89,7 @@ CREATE TABLE `api_keys` (
   `api_key_name` varchar(255) NOT NULL,
   `api_key_secret` varchar(255) NOT NULL,
   `api_key_decrypt_hash` varchar(200) NOT NULL,
+  `api_key_decrypt_hash_v2` varchar(512) DEFAULT NULL,
   `api_key_created_at` datetime NOT NULL DEFAULT current_timestamp(),
   `api_key_expire` date NOT NULL,
   `api_key_client_id` int(11) NOT NULL DEFAULT 0,
@@ -2008,6 +2009,29 @@ CREATE TABLE `security_audit_log` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `pending_vault_enrolments` (NIS2 fork)
+--
+
+DROP TABLE IF EXISTS `pending_vault_enrolments`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pending_vault_enrolments` (
+  `enrolment_id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `token_hash` varchar(255) NOT NULL,
+  `wrapped_master_key` varchar(512) NOT NULL,
+  `salt` varchar(64) NOT NULL,
+  `created_by_user_id` int(11) NOT NULL,
+  `created_at` datetime NOT NULL,
+  `expires_at` datetime NOT NULL,
+  `consumed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`enrolment_id`),
+  KEY `idx_user` (`user_id`),
+  KEY `idx_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `user_vault_unlock_methods` (NIS2 fork)
 --
 
@@ -2285,6 +2309,8 @@ CREATE TABLE `settings` (
   `config_agent_sso_redirect_uri` varchar(255) DEFAULT NULL,
   `config_agent_sso_jit_provisioning` tinyint(1) NOT NULL DEFAULT 0,
   `config_agent_sso_default_role_id` int(11) NOT NULL DEFAULT 0,
+  `config_security_audit_retention_days` int(11) NOT NULL DEFAULT 365,
+  `config_force_phishing_resistant_mfa` tinyint(1) NOT NULL DEFAULT 0,
   `config_module_enable_itdoc` tinyint(1) NOT NULL DEFAULT 1,
   `config_module_enable_accounting` tinyint(1) NOT NULL DEFAULT 1,
   `config_client_portal_enable` tinyint(1) NOT NULL DEFAULT 1,
@@ -2950,6 +2976,7 @@ CREATE TABLE `users` (
   `user_specific_encryption_ciphertext` varchar(200) DEFAULT NULL,
   `user_specific_encryption_ciphertext_v2` varchar(512) DEFAULT NULL,
   `user_entra_oid` varchar(64) DEFAULT NULL,
+  `user_force_webauthn` tinyint(1) NOT NULL DEFAULT 0,
   `user_php_session` varchar(255) DEFAULT NULL,
   `user_extension_key` varchar(18) DEFAULT NULL,
   `user_created_at` datetime NOT NULL DEFAULT current_timestamp(),

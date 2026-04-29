@@ -94,6 +94,9 @@ if (isset($api_key)) {
         $row = mysqli_fetch_assoc($sql);
         $api_key_name = htmlentities($row['api_key_name']);
         $api_key_decrypt_hash = $row['api_key_decrypt_hash']; // No sanitization
+        // Full row exposed to credential helpers so they can use the v2
+        // wrapping when present and lazy-migrate when not.
+        $api_key_row = $row;
         $client_id = intval($row['api_key_client_id']);
 
         // Set limit & offset for queries

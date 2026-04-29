@@ -4510,6 +4510,45 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.5'");
     }
 
+    // 2.4.4.5 -> 2.4.4.6: API key v2 wrapping, audit retention, force-WebAuthn,
+    // JIT vault enrolment magic-link table.
+    if (CURRENT_DATABASE_VERSION == '2.4.4.5') {
+        mysqli_query($mysqli, "ALTER TABLE `api_keys`
+            ADD COLUMN `api_key_decrypt_hash_v2` VARCHAR(512) NULL DEFAULT NULL
+            AFTER `api_key_decrypt_hash`");
+
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_security_audit_retention_days` INT NOT NULL DEFAULT 365,
+            ADD COLUMN `config_force_phishing_resistant_mfa`  TINYINT(1) NOT NULL DEFAULT 0");
+
+        mysqli_query($mysqli, "ALTER TABLE `users`
+            ADD COLUMN `user_force_webauthn` TINYINT(1) NOT NULL DEFAULT 0
+            AFTER `user_auth_method`");
+
+        mysqli_query($mysqli, "
+            CREATE TABLE IF NOT EXISTS `pending_vault_enrolments` (
+                `enrolment_id` INT NOT NULL AUTO_INCREMENT,
+                `user_id` INT NOT NULL,
+                `token_hash` VARCHAR(255) NOT NULL,
+                `wrapped_master_key` VARCHAR(512) NOT NULL,
+                `salt` VARCHAR(64) NOT NULL,
+                `created_by_user_id` INT NOT NULL,
+                `created_at` DATETIME NOT NULL,
+                `expires_at` DATETIME NOT NULL,
+                `consumed_at` DATETIME NULL DEFAULT NULL,
+                PRIMARY KEY (`enrolment_id`),
+                KEY `idx_user` (`user_id`),
+                KEY `idx_expires` (`expires_at`),
+                CONSTRAINT `fk_pending_vault_enrolments_user`
+                    FOREIGN KEY (`user_id`) REFERENCES `users`(`user_id`) ON DELETE CASCADE,
+                CONSTRAINT `fk_pending_vault_enrolments_admin`
+                    FOREIGN KEY (`created_by_user_id`) REFERENCES `users`(`user_id`) ON DELETE RESTRICT
+            ) ENGINE=InnoDB
+        ");
+
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.6'");
+    }
+
 } else {
     // Up-to-date
 }

@@ -585,12 +585,83 @@ function encryptCredentialEntry($credential_password_cleartext)
     return encryptCredentialEntryV2($credential_password_cleartext, $site_encryption_master_key);
 }
 
-function apiDecryptCredentialEntry($credential_ciphertext, $api_key_decrypt_hash, #[\SensitiveParameter]$api_key_decrypt_password)
+/**
+ * Unlock the master key for an API key.
+ *
+ * Mirrors unlockUserMasterKey but for the api_keys table:
+ *  - Tries v2 wrapping first (Argon2id + AES-256-GCM in api_key_decrypt_hash_v2)
+ *  - Falls back to v1 (PBKDF2 + AES-128-CBC in api_key_decrypt_hash)
+ *  - Lazy-migrates v1 to v2 on the first successful v1 unwrap, so subsequent
+ *    calls take the v2 path
+ *
+ * @param array $api_key_row Row from api_keys table; must have api_key_id,
+ *                           api_key_decrypt_hash, api_key_decrypt_hash_v2.
+ * @return string|null Master key bytes (16) on success, null on failure.
+ */
+function apiUnlockMasterKey(array $api_key_row, #[\SensitiveParameter] string $password, mysqli $mysqli): ?string
 {
-    // Decrypt the api hash to get the master key
-    $site_encryption_master_key = decryptUserSpecificKey($api_key_decrypt_hash, $api_key_decrypt_password);
+    $api_key_id = intval($api_key_row['api_key_id'] ?? 0);
 
-    if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+    if (!empty($api_key_row['api_key_decrypt_hash_v2'])) {
+        try {
+            return decryptUserSpecificKeyV2(
+                $api_key_row['api_key_decrypt_hash_v2'],
+                $password
+            );
+        } catch (Throwable $e) {
+            error_log("apiUnlockMasterKey: v2 unwrap failed for api_key_id=$api_key_id: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    if (!empty($api_key_row['api_key_decrypt_hash'])) {
+        $master_key = decryptUserSpecificKey(
+            $api_key_row['api_key_decrypt_hash'],
+            $password
+        );
+        if ($master_key === false || $master_key === '' || strlen($master_key) !== 16) {
+            error_log("apiUnlockMasterKey: v1 unwrap failed for api_key_id=$api_key_id");
+            return null;
+        }
+        try {
+            $v2 = encryptUserSpecificKeyV2($master_key, $password);
+            $v2_e = mysqli_real_escape_string($mysqli, $v2);
+            mysqli_query(
+                $mysqli,
+                "UPDATE api_keys
+                 SET api_key_decrypt_hash_v2 = '$v2_e'
+                 WHERE api_key_id = $api_key_id"
+            );
+        } catch (Throwable $e) {
+            error_log("API v2 lazy migration failed for api_key_id=$api_key_id: " . $e->getMessage());
+        }
+        return $master_key;
+    }
+
+    return null;
+}
+
+function apiDecryptCredentialEntry($credential_ciphertext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password)
+{
+    global $mysqli;
+
+    // Backward-compatible signature: callers may pass either the api_keys row
+    // (preferred — enables v2 wrapping + lazy migration) or just the legacy
+    // api_key_decrypt_hash string. Detect and dispatch.
+    if (is_array($api_key_row_or_legacy_hash)) {
+        $site_encryption_master_key = apiUnlockMasterKey(
+            $api_key_row_or_legacy_hash, $api_key_decrypt_password, $mysqli
+        );
+    } else {
+        $site_encryption_master_key = decryptUserSpecificKey(
+            $api_key_row_or_legacy_hash, $api_key_decrypt_password
+        );
+        if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+            $site_encryption_master_key = null;
+        }
+    }
+
+    if ($site_encryption_master_key === null) {
         return false;
     }
 
@@ -612,12 +683,24 @@ function apiDecryptCredentialEntry($credential_ciphertext, $api_key_decrypt_hash
     );
 }
 
-function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_decrypt_hash, #[\SensitiveParameter]$api_key_decrypt_password)
+function apiEncryptCredentialEntry(#[\SensitiveParameter]$credential_cleartext, $api_key_row_or_legacy_hash, #[\SensitiveParameter]$api_key_decrypt_password)
 {
-    // Decrypt the api hash to get the master key
-    $site_encryption_master_key = decryptUserSpecificKey($api_key_decrypt_hash, $api_key_decrypt_password);
+    global $mysqli;
 
-    if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+    if (is_array($api_key_row_or_legacy_hash)) {
+        $site_encryption_master_key = apiUnlockMasterKey(
+            $api_key_row_or_legacy_hash, $api_key_decrypt_password, $mysqli
+        );
+    } else {
+        $site_encryption_master_key = decryptUserSpecificKey(
+            $api_key_row_or_legacy_hash, $api_key_decrypt_password
+        );
+        if ($site_encryption_master_key === false || $site_encryption_master_key === '') {
+            $site_encryption_master_key = null;
+        }
+    }
+
+    if ($site_encryption_master_key === null) {
         return false;
     }
 

@@ -27,27 +27,61 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
 require_once __DIR__ . '/../includes/security_audit.php';
 
-$opts = getopt('', ['from::', 'to::', 'help']);
+$opts = getopt('', ['from::', 'to::', 'all', 'help']);
 if (isset($opts['help'])) {
-    echo "Usage: php scripts/audit_verify.php [--from=ID] [--to=ID]\n";
+    echo "Usage: php scripts/audit_verify.php [--from=ID] [--to=ID] [--all]\n";
+    echo "  --from=ID  Start from a specific log_id (uses prev_hash from row before).\n";
+    echo "  --to=ID    Stop at a specific log_id (inclusive).\n";
+    echo "  --all      Walk from log_id=1 even when an audit.archived re-anchor\n";
+    echo "             marker exists. Without this flag, verification starts at\n";
+    echo "             the latest archived marker because pre-marker entries are\n";
+    echo "             expected to have stale prev_hash values pointing into\n";
+    echo "             pruned (deleted) rows.\n";
     exit(0);
 }
 
 $from = isset($opts['from']) ? intval($opts['from']) : 0;
 $to   = isset($opts['to'])   ? intval($opts['to'])   : PHP_INT_MAX;
+$walk_all = isset($opts['all']);
 
-// Determine starting prev_hash. If --from is set, take the entry_hash of
-// the row before $from. Else start from the null hash (first row chain).
-if ($from > 1) {
-    $row = mysqli_fetch_assoc(mysqli_query(
+// If no explicit --from and no --all, auto-anchor at the latest
+// audit.archived marker so the chain after pruning verifies cleanly.
+if ($from === 0 && !$walk_all) {
+    $marker_row = mysqli_fetch_assoc(mysqli_query(
         $mysqli,
-        "SELECT entry_hash FROM security_audit_log WHERE log_id = " . ($from - 1) . " LIMIT 1"
+        "SELECT log_id FROM security_audit_log
+         WHERE event_type = 'audit.archived'
+         ORDER BY log_id DESC LIMIT 1"
     ));
-    if (!$row) {
-        fwrite(STDERR, "Row before --from=$from not found.\n");
-        exit(1);
+    if ($marker_row) {
+        $from = intval($marker_row['log_id']);
+        echo "audit_verify: auto-anchoring at log_id=$from (latest audit.archived marker; pass --all to walk earlier rows)\n";
     }
-    $prev_hash = $row['entry_hash'];
+}
+
+// Determine starting prev_hash.
+//   - If --from points at an audit.archived marker, the marker is itself a
+//     re-anchor (prev_hash = NULL_HASH by construction), so start from genesis.
+//   - If --from is some other row, take the entry_hash of the row before.
+//   - Otherwise start from the null hash (genesis).
+if ($from > 1) {
+    $start_row = mysqli_fetch_assoc(mysqli_query(
+        $mysqli,
+        "SELECT event_type FROM security_audit_log WHERE log_id = $from LIMIT 1"
+    ));
+    if ($start_row && $start_row['event_type'] === 'audit.archived') {
+        $prev_hash = SECURITY_AUDIT_NULL_HASH;
+    } else {
+        $row = mysqli_fetch_assoc(mysqli_query(
+            $mysqli,
+            "SELECT entry_hash FROM security_audit_log WHERE log_id = " . ($from - 1) . " LIMIT 1"
+        ));
+        if (!$row) {
+            fwrite(STDERR, "Row before --from=$from not found.\n");
+            exit(1);
+        }
+        $prev_hash = $row['entry_hash'];
+    }
 } else {
     $prev_hash = SECURITY_AUDIT_NULL_HASH;
 }

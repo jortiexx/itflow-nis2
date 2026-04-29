@@ -6,6 +6,8 @@
 
 defined('FROM_POST_HANDLER') || die("Direct file access is not allowed");
 
+require_once __DIR__ . '/../../includes/vault_unlock.php';
+
 if (isset($_POST['add_api_key'])) {
 
     validateCSRFToken($_POST['csrf_token']);
@@ -15,11 +17,28 @@ if (isset($_POST['add_api_key'])) {
     $client_id = intval($_POST['client']);
     $secret = sanitizeInput($_POST['key']); // API Key
 
-    // Credential decryption password
-    $password = password_hash(trim($_POST['password']), PASSWORD_DEFAULT);
-    $apikey_specific_encryption_ciphertext = encryptUserSpecificKey(trim($_POST['password']));
+    // Credential decryption password — wrap the master key both in v1 (legacy
+    // PBKDF2 + AES-128-CBC) and v2 (Argon2id + AES-256-GCM) so existing API
+    // consumers keep working while new requests can use the v2 path.
+    $apikey_password_plain = trim($_POST['password']);
+    $password = password_hash($apikey_password_plain, PASSWORD_DEFAULT);
+    $apikey_specific_encryption_ciphertext = encryptUserSpecificKey($apikey_password_plain);
 
-    mysqli_query($mysqli,"INSERT INTO api_keys SET api_key_name = '$name', api_key_secret = '$secret', api_key_decrypt_hash = '$apikey_specific_encryption_ciphertext', api_key_expire = '$expire', api_key_client_id = $client_id");
+    // v2 wrapping: encryptUserSpecificKey() above already validated that the
+    // session has a usable master key (it throws otherwise). Reuse the master
+    // key from the active session to wrap a fresh v2 row.
+    $apikey_v2 = '';
+    try {
+        $session_master_key = vaultMasterKeyFromSession();
+        if ($session_master_key !== null) {
+            $apikey_v2 = encryptUserSpecificKeyV2($session_master_key, $apikey_password_plain);
+        }
+    } catch (Throwable $e) {
+        error_log('API key v2 wrap failed: ' . $e->getMessage());
+    }
+    $apikey_v2_e = mysqli_real_escape_string($mysqli, $apikey_v2);
+
+    mysqli_query($mysqli,"INSERT INTO api_keys SET api_key_name = '$name', api_key_secret = '$secret', api_key_decrypt_hash = '$apikey_specific_encryption_ciphertext', api_key_decrypt_hash_v2 = '$apikey_v2_e', api_key_expire = '$expire', api_key_client_id = $client_id");
 
     $api_key_id = mysqli_insert_id($mysqli);
 

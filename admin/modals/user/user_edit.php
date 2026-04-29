@@ -15,6 +15,7 @@ $user_email = nullable_htmlentities($row['user_email']);
 $user_avatar = nullable_htmlentities($row['user_avatar']);
 $user_token = nullable_htmlentities($row['user_token']);
 $user_config_force_mfa = intval($row['user_config_force_mfa']);
+$user_force_webauthn   = intval($row['user_force_webauthn'] ?? 0);
 $user_role_id = intval($row['user_role_id']);
 $user_initials = nullable_htmlentities(initials($user_name));
 
@@ -138,6 +139,12 @@ ob_start();
                             Force MFA
                         </label>
                     </div>
+                    <div class="custom-control custom-checkbox mt-2">
+                        <input class="custom-control-input" type="checkbox" id="forceWebAuthnCheckBox<?php echo $user_id; ?>" name="force_webauthn" value="1" <?php if($user_force_webauthn == 1){ echo "checked"; } ?>>
+                        <label for="forceWebAuthnCheckBox<?php echo $user_id; ?>" class="custom-control-label">
+                            Require phishing-resistant MFA (WebAuthn only) <small class="text-muted">— rejects TOTP and remember-me bypass for this user</small>
+                        </label>
+                    </div>
                 </div>
 
                 <?php if (!empty($user_token)) { ?>
@@ -156,6 +163,18 @@ ob_start();
                     </div>
 
                 <?php } ?>
+
+                <hr>
+                <div class="form-group">
+                    <label>Vault enrolment</label>
+                    <p class="small text-muted mb-2">
+                        Issue a one-hour magic link for this user to set up their vault PIN or hardware unlock without needing a password. The link is emailed to the user (or shown to you for manual delivery if SMTP is not configured). Useful for SSO-only / JIT-provisioned agents.
+                    </p>
+                    <a href="post.php?send_vault_enrolment&user_id=<?= $user_id ?>&csrf_token=<?= urlencode($_SESSION['csrf_token']) ?>"
+                       class="btn btn-outline-primary btn-sm confirm-link">
+                        <i class="fa fa-envelope-open-text mr-2"></i>Send vault enrolment link
+                    </a>
+                </div>
             </div>
 
             <div class="tab-pane fade" id="pills-user-access<?php echo $user_id; ?>">

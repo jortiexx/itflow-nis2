@@ -334,6 +334,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                     $token                      = sanitizeInput($selectedRow['user_token']);
                     $force_mfa                  = intval($selectedRow['user_config_force_mfa']);
                     $user_encryption_ciphertext = $selectedRow['user_specific_encryption_ciphertext'];
+                    // Phase 8: when admin sets user_force_webauthn=1, accept ONLY
+                    // WebAuthn-based MFA for this account. TOTP submissions are
+                    // ignored, remember-me bypass is disabled, and the agent
+                    // must complete the WebAuthn ceremony to proceed.
+                    $force_webauthn = intval($selectedRow['user_force_webauthn'] ?? 0) === 1;
 
                     $current_code = 0;
                     if (isset($_POST['current_code'])) {
@@ -343,12 +348,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                     $mfa_is_complete = false;
                     $extended_log    = '';
 
-                    if (empty($token)) {
-                        $mfa_is_complete = true; // no MFA configured
+                    if (empty($token) && !$force_webauthn) {
+                        $mfa_is_complete = true; // no MFA configured (and WebAuthn not forced)
                     }
 
-                    // remember-me cookie allows bypass
-                    if (isset($_COOKIE['rememberme'])) {
+                    // remember-me cookie allows bypass — disabled when WebAuthn is forced
+                    if (!$force_webauthn && isset($_COOKIE['rememberme'])) {
                         $remember_tokens = mysqli_query($mysqli, "
                             SELECT remember_token_token
                             FROM remember_tokens
@@ -364,8 +369,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
                         }
                     }
 
-                    // Validate MFA code
-                    if (!empty($current_code) && TokenAuth6238::verify($token, $current_code)) {
+                    // Validate MFA code — disabled entirely when WebAuthn is forced
+                    if (!$force_webauthn && !empty($current_code) && TokenAuth6238::verify($token, $current_code)) {
                         $mfa_is_complete = true;
                         $extended_log    = 'with MFA';
                     }

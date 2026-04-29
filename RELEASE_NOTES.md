@@ -2,7 +2,77 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 7: WebAuthn PRF for vault unlock
+## Unreleased — Phase 8: Operationalisation
+
+Four NIS2-relevant operational improvements bundled. Each is independently small but together they close visible gaps from the post-phase-7 NIS2 review.
+
+### Schema migration `2.4.4.5 → 2.4.4.6`
+- `api_keys.api_key_decrypt_hash_v2` (VARCHAR 512, nullable) — v2 wrapped master key
+- `settings.config_security_audit_retention_days` (INT, default 365)
+- `settings.config_force_phishing_resistant_mfa` (TINYINT) — global flag, currently used as future-proofing; per-user enforcement is via `users.user_force_webauthn`
+- `users.user_force_webauthn` (TINYINT) — admin-set per-user flag
+- New table `pending_vault_enrolments` for magic-link enrolment
+
+### 8a — API key v2 wrapping (NIS2 Art. 21(2)(h))
+
+API keys previously wrapped the master key with the legacy v1 stack (PBKDF2-SHA256 + AES-128-CBC) regardless of the user-side v2 migration done in Phase 1. They now use the same Argon2id + AES-256-GCM stack as user wrappings:
+
+- `apiUnlockMasterKey()` helper — v2 first, v1 fallback, lazy migration on first successful v1 unwrap.
+- `apiEncryptCredentialEntry` / `apiDecryptCredentialEntry` accept either the full `api_keys` row (preferred) or the legacy hash string (backward-compatible callers).
+- New API keys created via `admin/post/api_keys.php` get both v1 and v2 wrappings written at create time.
+- `api/v1/validate_api_key.php` exposes the row to downstream credential helpers.
+- API consumers do not need to change anything; the password they pass is unwrapped via whichever method is present.
+
+### 8b — Audit log retention (NIS2 Art. 21(2)(b))
+
+The hash-chained `security_audit_log` previously grew unbounded. The configurable retention period is honoured by a new prune script:
+
+- `scripts/audit_prune.php` — reads `config_security_audit_retention_days`, writes entries older than the cutoff to a gzip-compressed JSONL archive in `uploads/audit_archive/`, computes its SHA-256, inserts a synthetic `audit.archived` event with metadata pointing to the archive, and re-anchors the live chain (the marker uses `prev_hash = NULL_HASH` so the chain after pruning verifies cleanly from genesis).
+- `scripts/audit_verify.php` updated: when no `--from` is given and an `audit.archived` marker exists, the verifier auto-anchors at the latest marker. Pre-marker entries are in the archive and verifiable offline against the SHA-256 stored in the marker. Pass `--all` to walk pre-marker rows (will report inconsistencies once a chain crosses an archive boundary).
+- Recommended cron: `0 3 * * *  /usr/bin/php /path/to/itflow/scripts/audit_prune.php`
+
+### 8c — Magic-link vault enrolment for SSO-only / JIT agents (NIS2 Art. 21(2)(i))
+
+Resolves the long-standing chicken-and-egg for JIT-provisioned SSO users: they have no password, so the master key was never wrapped under any factor for them, so they could not enrol PIN/PRF themselves.
+
+- `includes/vault_enrolment.php`:
+  - `vaultIssueEnrolmentToken()` — generates a 32-byte token, derives a one-shot KEK via Argon2id, wraps the master key under it, stores token bcrypt-hash + wrapped key + salt in `pending_vault_enrolments` with 1-hour expiry. Caller must already have the master key in their session.
+  - `vaultRedeemEnrolmentToken()` — atomically claims the row (single use), recovers the master key.
+- `agent/vault_enrol.php` — endpoint reachable via the magic link. Requires the user to be SSO-authenticated (bounces to `/login.php` otherwise so they SSO and return). On successful redemption: regenerates session id, generates session encryption material, sends the user to `/agent/user/user_security.php?enrolment=ok` to complete PIN / PRF enrolment.
+- `admin/post/users.php` — handler for `?send_vault_enrolment&user_id=…&csrf_token=…`. Issues the token and emails it via the existing mail queue. If SMTP is not configured, surfaces the link via flash alert so the admin can hand it off out of band.
+- `admin/modals/user/user_edit.php` — adds a "Send vault enrolment link" button per user.
+- Audit events emitted: `vault.enrolment.created`, `vault.enrolment.redeemed`, `vault.enrolment.failed`.
+
+Threat model:
+- Email interception: attacker also needs to be SSO-authenticated as the target user (Entra MFA + conditional access blocks this).
+- Replay: token is single-use; `consumed_at` is set atomically before crypto unwrap proceeds.
+- Stale links: 1-hour TTL.
+
+### 8d — Phishing-resistant MFA enforcement (NIS2 Art. 21(2)(j))
+
+Per-user admin flag `user_force_webauthn`. When set:
+- `login.php` rejects TOTP code submissions for that user (the `current_code` field is ignored).
+- The remember-me cookie bypass is disabled for that user.
+- The user must complete the WebAuthn ceremony to log in.
+
+UI:
+- Checkbox "Require phishing-resistant MFA (WebAuthn only)" added to `admin/modals/user/user_edit.php` next to the existing Force MFA toggle.
+
+This is per-user rather than global because not every agent will have a hardware authenticator immediately. Admins flip the bit once the user has enrolled at least one WebAuthn credential.
+
+### Self-tests
+New `scripts/vault_enrolment_self_test.php` covers the magic-link wrap/unwrap round-trip, wrong-token rejection, wrong-salt rejection, and tamper detection. Six tests, all passing. Cumulative: 70 self-tests, 0 failures across crypto / SSO / vault PIN / vault PRF / vault enrolment / audit log / WebAuthn.
+
+### Operator action required
+- Run database migration: `Admin → Update → Update Database` (or `php scripts/update_cli.php --update_db`).
+- Add `php scripts/audit_prune.php` to a daily cron.
+- (Optional) For SSO-only agents: edit each user → "Send vault enrolment link" so they can self-enrol PIN / PRF without an out-of-band password.
+- (Optional) For agents who have enrolled WebAuthn: set "Require phishing-resistant MFA" so TOTP becomes unavailable for those accounts.
+
+### Not in scope (deferred)
+- **Per-client master keys** — the largest remaining technical NIS2 gap. Touches every credential read/write path and requires a substantial data migration. Will ship as Phase 9 separately to give it the attention it warrants.
+
+## v0.8.0-nis2-prf — Phase 7: WebAuthn PRF for vault unlock
 
 This phase adds hardware-bound vault unlock via the WebAuthn PRF extension. After SSO sign-in, agents tap their security key (Touch ID, Windows Hello, YubiKey 5+, platform passkey) and the vault unlocks in a single ceremony — no PIN typing. The existing PIN method remains as the recovery fallback.
 

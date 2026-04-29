@@ -6,6 +6,90 @@
 
 defined('FROM_POST_HANDLER') || die("Direct file access is not allowed");
 
+require_once __DIR__ . '/../../includes/vault_unlock.php';
+require_once __DIR__ . '/../../includes/vault_enrolment.php';
+require_once __DIR__ . '/../../includes/security_audit.php';
+
+if (isset($_GET['send_vault_enrolment'])) {
+
+    validateAdminRole();
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_GET['csrf_token'] ?? '')) {
+        flash_alert('CSRF token mismatch.', 'danger');
+        redirect();
+    }
+
+    $target_user_id = intval($_GET['user_id'] ?? 0);
+    if ($target_user_id <= 0) {
+        flash_alert('Invalid user id.', 'danger');
+        redirect();
+    }
+
+    if (vaultMasterKeyFromSession() === null) {
+        flash_alert('Your own vault is locked. Sign in with password / unlock with PIN before issuing enrolment links.', 'danger');
+        redirect();
+    }
+
+    $target = mysqli_fetch_assoc(mysqli_query($mysqli,
+        "SELECT user_id, user_email, user_name FROM users
+         WHERE user_id = $target_user_id AND user_archived_at IS NULL LIMIT 1"));
+    if (!$target) {
+        flash_alert('Target user not found or archived.', 'danger');
+        redirect();
+    }
+
+    try {
+        $token = vaultIssueEnrolmentToken($target_user_id, $session_user_id, $mysqli);
+    } catch (Throwable $e) {
+        error_log('vaultIssueEnrolmentToken failed: ' . $e->getMessage());
+        flash_alert('Could not issue enrolment token: ' . $e->getMessage(), 'danger');
+        redirect();
+    }
+
+    $base = ($config_https_only ? 'https://' : 'http://') . $config_base_url;
+    $link = "$base/agent/vault_enrol.php?t=" . urlencode($token);
+
+    // Send via the existing mail queue. Best-effort; on SMTP misconfig the
+    // admin still sees the link in the flash message and can hand it off
+    // out-of-band.
+    $email_sent = false;
+    if (!empty($config_smtp_host) && !empty($target['user_email'])) {
+        $subject = "$config_app_name vault enrolment link";
+        $body = "Hi " . htmlentities($target['user_name']) . ",<br><br>"
+              . "Your administrator has issued a one-time vault enrolment link for $config_app_name.<br><br>"
+              . "Click the link below within the next hour to set up your vault PIN or hardware key:<br><br>"
+              . "<a href=\"$link\">$link</a><br><br>"
+              . "After completion, the link expires immediately. If you did not request this, ignore this email and notify your administrator.<br><br>"
+              . "— $config_app_name";
+        $mail_data = [[
+            'from'           => $config_mail_from_email,
+            'from_name'      => $config_mail_from_name,
+            'recipient'      => $target['user_email'],
+            'recipient_name' => $target['user_name'],
+            'subject'        => $subject,
+            'body'           => $body,
+        ]];
+        addToMailQueue($mail_data);
+        $email_sent = true;
+    }
+
+    logAction('Vault', 'Enrolment issued',
+        "$session_name issued vault enrolment link for {$target['user_email']}",
+        0, $target_user_id);
+    securityAudit('vault.enrolment.created', [
+        'user_id'   => $session_user_id,
+        'target_type' => 'user',
+        'target_id' => $target_user_id,
+        'metadata'  => ['target_email' => $target['user_email'], 'email_queued' => $email_sent],
+    ]);
+
+    if ($email_sent) {
+        flash_alert("Vault enrolment link queued to {$target['user_email']}. Valid for 1 hour.", 'success');
+    } else {
+        flash_alert("Email not configured; share this link manually (valid for 1 hour): $link", 'warning');
+    }
+    redirect();
+}
+
 if (isset($_POST['add_user'])) {
 
     validateCSRFToken($_POST['csrf_token']);
@@ -152,7 +236,8 @@ if (isset($_POST['edit_user'])) {
         }
     }
 
-    mysqli_query($mysqli, "UPDATE users SET user_name = '$name', user_email = '$email', user_role_id = $role WHERE user_id = $user_id");
+    $force_webauthn = !empty($_POST['force_webauthn']) ? 1 : 0;
+    mysqli_query($mysqli, "UPDATE users SET user_name = '$name', user_email = '$email', user_role_id = $role, user_force_webauthn = $force_webauthn WHERE user_id = $user_id");
 
     if (!empty($new_password)) {
         $new_password = password_hash($new_password, PASSWORD_DEFAULT);

@@ -42,7 +42,7 @@ if (isset($_POST['credential_uri_2'])) {
 
 if (isset($_POST['credential_username'])) {
     $username = $_POST['credential_username'];
-    $username = apiEncryptCredentialEntry($username, $api_key_decrypt_hash, $api_key_decrypt_password);
+    $username = apiEncryptCredentialEntry($username, $api_key_row ?? $api_key_decrypt_hash, $api_key_decrypt_password);
 } elseif (isset($credential_row) && isset($credential_row['credential_username'])) {
     $username = $credential_row['credential_username'];
 } else {
@@ -51,7 +51,7 @@ if (isset($_POST['credential_username'])) {
 
 if (isset($_POST['credential_password'])) {
     $password = $_POST['credential_password'];
-    $password = apiEncryptCredentialEntry($password, $api_key_decrypt_hash, $api_key_decrypt_password);
+    $password = apiEncryptCredentialEntry($password, $api_key_row ?? $api_key_decrypt_hash, $api_key_decrypt_password);
     $password_changed = true;
 } elseif (isset($credential_row) && isset($credential_row['credential_password'])) {
     $password = $credential_row['credential_password'];
