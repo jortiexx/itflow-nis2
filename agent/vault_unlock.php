@@ -33,6 +33,17 @@ $user_id   = intval($_SESSION['user_id']);
 $row       = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT user_name FROM users WHERE user_id = $user_id LIMIT 1"));
 $user_name = $row ? $row['user_name'] : '';
 
+// Company branding for the login-page chrome
+$brand_row = mysqli_fetch_assoc(mysqli_query($mysqli, "
+    SELECT companies.company_name, companies.company_logo
+    FROM settings
+    LEFT JOIN companies ON settings.company_id = companies.company_id
+    WHERE settings.company_id = 1
+    LIMIT 1
+"));
+$company_name = $brand_row['company_name'] ?? 'ITFlow';
+$company_logo = $brand_row['company_logo'] ?? '';
+
 require_once __DIR__ . '/../includes/load_global_settings.php';
 require_once __DIR__ . '/../includes/inc_set_timezone.php';
 
@@ -95,25 +106,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Unlock vault</title>
-    <link rel="stylesheet" href="/plugins/AdminLTE/dist/css/adminlte.min.css">
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title><?= nullable_htmlentities($company_name) ?> | Unlock vault</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+
     <link rel="stylesheet" href="/plugins/fontawesome-free/css/all.min.css">
+
+    <?php if (file_exists($_SERVER['DOCUMENT_ROOT'] . '/uploads/favicon.ico')) { ?>
+        <link rel="icon" type="image/x-icon" href="/uploads/favicon.ico">
+    <?php } ?>
+
+    <link rel="stylesheet" href="/plugins/adminlte/css/adminlte.min.css">
 </head>
-<body class="hold-transition login-page" style="background: #1f2d3d;">
+<body class="hold-transition login-page">
+
 <div class="login-box">
-    <div class="card card-outline card-primary">
-        <div class="card-header text-center">
-            <h3 class="mb-0"><i class="fa fa-lock mr-2"></i>Unlock vault</h3>
-        </div>
-        <div class="card-body">
+    <div class="login-logo">
+        <?php if (!empty($company_logo) && file_exists($_SERVER['DOCUMENT_ROOT'] . "/uploads/settings/$company_logo")) { ?>
+            <img alt="<?= nullable_htmlentities($company_name) ?> logo" height="110" width="380" class="img-fluid" src="/uploads/settings/<?= htmlentities($company_logo) ?>">
+        <?php } else { ?>
+            <span class="text-primary text-bold"><i class="fas fa-paper-plane mr-2"></i>IT</span>Flow
+        <?php } ?>
+    </div>
+
+    <div class="card">
+        <div class="card-body login-card-body">
+
+            <p class="login-box-msg px-0">
+                <i class="fa fa-lock mr-2"></i>Unlock your vault
+            </p>
 
             <?php if ($error): ?>
                 <div class="alert alert-danger small"><?= htmlentities($error) ?></div>
             <?php endif; ?>
 
-            <p class="small text-muted">
-                Signed in as <strong><?= htmlentities($user_name) ?></strong>. Enter your vault PIN to access stored credentials. After <?= VAULT_LOCKOUT_THRESHOLD ?> failed attempts the PIN is locked for <?= VAULT_LOCKOUT_MINUTES ?> minutes.
+            <p class="small text-muted text-center mb-3">
+                Signed in as <strong><?= htmlentities($user_name) ?></strong>.<br>
+                Enter your vault PIN to access stored credentials.
             </p>
 
             <form method="post" autocomplete="off">
@@ -133,13 +164,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </button>
             </form>
 
-            <hr>
+            <p class="small text-muted mb-0">
+                After <?= VAULT_LOCKOUT_THRESHOLD ?> failed attempts the PIN is locked for <?= VAULT_LOCKOUT_MINUTES ?> minutes.
+            </p>
+
+            <hr class="my-3">
+
             <p class="small mb-0">
-                Don't have a PIN? Sign in with your password first to set one up. <br>
-                <a href="/post.php?logout">Log out</a>
+                Don't have a PIN yet? Sign in with your account password to set one up.
+                &middot; <a href="/post.php?logout">Log out</a>
             </p>
         </div>
     </div>
 </div>
+
 </body>
 </html>
