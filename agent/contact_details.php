@@ -194,7 +194,7 @@ if (isset($_GET['contact_id'])) {
 
                     <div class="text-center">
                         <?php if ($contact_photo) { ?>
-                            <img class="img-fluid img-circle p-3" alt="contact_photo" src="<?php echo "../uploads/clients/$client_id/$contact_photo"; ?>">
+                            <img class="img-fluid img-circle p-3" alt="contact_photo" src="<?php echo "/photo.php?type=contact&id=$contact_id"; ?>">
                         <?php } else { ?>
                             <span class="fa-stack fa-4x">
                                 <i class="fa fa-circle fa-stack-2x text-secondary"></i>

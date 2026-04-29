@@ -191,7 +191,7 @@ ob_start();
     <h5 class="modal-title">
         <div class="media">
             <?php if ($contact_photo) { ?>
-                <img class="img-thumbnail img-circle img-size-50 mr-1" src="<?= "../uploads/clients/$client_id/$contact_photo" ?>">
+                <img class="img-thumbnail img-circle img-size-50 mr-1" src="<?= "/photo.php?type=contact&id=$contact_id" ?>">
             <?php } else { ?>
                 <span class="fa-stack">
                     <i class="fa fa-circle fa-stack-2x text-secondary"></i>

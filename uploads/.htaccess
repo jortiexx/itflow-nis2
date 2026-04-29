@@ -1,28 +1,24 @@
-# Phase 13: deny direct access to uploaded files. All file fetches must go
-# through /agent/file_download.php (which handles ACL + decrypt + audit).
+# Phase 13/14: deny ALL direct access to uploaded files. Every fetch must
+# go through one of:
+#   /agent/file_download.php?id=N        - generic files (encrypted, audited)
+#   /photo.php?type=X&id=N               - photos (ACL'd, MIME-checked)
+# Both endpoints authenticate, ACL-check, and audit denials.
 #
-# Photos that are *not* in the files table (asset/contact/rack/location/avatar
-# images) still need direct access; allow only safe image extensions.
-# Anything else - PDFs, ZIPs, Office docs, scripts - is denied.
+# Apache MUST NOT serve anything from this directory tree directly. PHP
+# reads files via the filesystem (readfile / file_get_contents), which is
+# unaffected by these rules.
 
 Options -Indexes -ExecCGI
 php_flag engine off
 RemoveHandler .php .phtml .phar .phps
 RemoveType .php .phtml .phar .phps
 
-# Hard-deny any executable / scriptable type that should never be served raw.
+# Hard deny any executable / scriptable type as belt-and-braces.
 <FilesMatch "\.(php|phtml|phar|phps|cgi|pl|sh|py|rb|asp|aspx|jsp|exe|bat|ps1)$">
   Require all denied
 </FilesMatch>
 
-# Default-deny all files in this directory tree.
+# Default-deny everything else.
 <FilesMatch ".*">
   Require all denied
-</FilesMatch>
-
-# Allow only the small set of image extensions used for non-encrypted
-# profile/asset/rack/location photos. These are referenced by direct URL
-# from pages that don't go through the files table.
-<FilesMatch "\.(jpg|jpeg|png|gif|webp|svg|ico)$">
-  Require all granted
 </FilesMatch>

@@ -475,7 +475,7 @@ $num_rows = mysqli_fetch_row(mysqli_query($mysqli, "SELECT FOUND_ROWS()"));
                                     <div class="media">
                                         <?php if ($contact_photo) { ?>
                                             <span class="fa-stack fa-2x mr-3 text-center">
-                                                <img class="img-size-50 img-circle" src="<?php echo "../uploads/clients/$client_id/$contact_photo"; ?>">
+                                                <img class="img-size-50 img-circle" src="<?php echo "/photo.php?type=contact&id=$contact_id"; ?>">
                                             </span>
                                         <?php } else { ?>
                                             <span class="fa-stack fa-2x mr-3">

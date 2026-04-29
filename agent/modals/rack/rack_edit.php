@@ -164,7 +164,7 @@ ob_start();
             <div class="tab-pane fade" id="pills-rack-notes<?php echo $rack_id; ?>">
 
                 <?php if ($rack_photo) { ?>
-                    <img class="img-fluid p-3" alt="rack_photo" src="<?php echo "uploads/clients/$client_id/$rack_photo"; ?>">
+                    <img class="img-fluid p-3" alt="rack_photo" src="<?php echo "/photo.php?type=rack&id=$rack_id"; ?>">
                 <?php } ?>
 
                 <div class="form-group">

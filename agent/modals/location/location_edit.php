@@ -100,7 +100,7 @@ ob_start();
 
                 <div class="mb-3" style="text-align: center;">
                     <?php if (!empty($location_photo)) { ?>
-                        <img class="img-fluid" src="<?php echo "../uploads/clients/$client_id/$location_photo"; ?>">
+                        <img class="img-fluid" src="<?php echo "/photo.php?type=location&id=$location_id"; ?>">
                     <?php } ?>
                 </div>
 

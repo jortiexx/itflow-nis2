@@ -278,7 +278,7 @@ if (isset($_GET['asset_id'])) {
                             <?php if ($asset_favorite) { ?><i class="fas fa-fw text-warning fa-star" title="Favorite"></i><?php } ?>
                         </h4>
                         <?php if ($asset_photo) { ?>
-                            <img class="img-fluid img-circle p-3" alt="asset_photo" src="<?= "../uploads/clients/$client_id/$asset_photo"; ?>">
+                            <img class="img-fluid img-circle p-3" alt="asset_photo" src="<?= "/photo.php?type=asset&id=$asset_id"; ?>">
                         <?php } ?>
                         <?php if ($asset_description) { ?>
                             <div class="text-secondary"><?= $asset_description; ?></div>

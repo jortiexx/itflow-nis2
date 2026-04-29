@@ -299,7 +299,7 @@ ob_start();
                         <?php if ($asset_favorite) { ?><i class="fas fa-fw text-warning fa-star" title="Favorite"></i><?php } ?>
                     </h3>
                     <?php if ($asset_photo) { ?>
-                        <img class="img-fluid img-circle p-3" alt="asset_photo" src="<?php echo "../uploads/clients/$client_id/$asset_photo"; ?>">
+                        <img class="img-fluid img-circle p-3" alt="asset_photo" src="<?php echo "/photo.php?type=asset&id=$asset_id"; ?>">
                     <?php } ?>
                     <?php if ($asset_description) { ?>
                         <div class="text-secondary"><?php echo $asset_description; ?></div>

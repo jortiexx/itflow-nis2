@@ -684,13 +684,13 @@ if (isset($_GET['ticket_id'])) {
                         $ticket_reply_by_display = nullable_htmlentities($row['contact_name']);
                         $user_initials = initials($row['contact_name']);
                         $user_avatar = nullable_htmlentities($row['contact_photo']);
-                        $avatar_link = "../uploads/clients/$client_id/$user_avatar";
+                        $avatar_link = "/photo.php?type=contact&id=$ticket_reply_by";
                     } else {
                         $ticket_reply_by_display = nullable_htmlentities($row['user_name']);
                         $user_id = intval($row['user_id']);
                         $user_avatar = nullable_htmlentities($row['user_avatar']);
                         $user_initials = initials($row['user_name']);
-                        $avatar_link = "../uploads/users/$user_id/$user_avatar";
+                        $avatar_link = "/photo.php?type=user&id=$user_id";
                         $ticket_reply_time_worked = $row['ticket_reply_time_worked'];
                     }
 

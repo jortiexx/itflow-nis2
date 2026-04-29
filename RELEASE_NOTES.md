@@ -2,6 +2,33 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.15.0-nis2-photos — Phase 14: PHP-mediated photo endpoint + uploads default-deny
+
+Closes the photo gap left open at the end of phase 13. Asset, contact, rack, and location photos plus user/operator avatars no longer come from direct `/uploads/...` URLs. Every photo fetch now routes through `/photo.php`, which:
+
+1. Requires an authenticated session — agent (`$_SESSION['logged']`) OR client portal (`$_SESSION['client_logged_in']`).
+2. Looks up the canonical filename from the parent table (`contacts.contact_photo`, `assets.asset_photo`, `racks.rack_photo`, `locations.location_photo`, `users.user_avatar`).
+3. Verifies the viewer is allowed to see that client's data — admin bypass, explicit `user_client_permissions` grant, unrestricted-default-fallback, OR (for client portal) `session.client_id === photo.client_id`.
+4. Confirms the bytes are actually an image via server-side `finfo` (`image/jpeg|png|gif|webp|svg+xml|x-icon|vnd.microsoft.icon` only). Refuses anything else.
+5. Audits denials as `photo.access.denied`. Successes are intentionally **not** audited per fetch — list pages render dozens of thumbnails and would flood the audit log; the access stream is captured by web-server access logs (which include the authenticated session and the URL).
+
+URLs replaced across the agent UI (`asset_details`, `contact_details`, `client_overview`, `contacts`, `racks`, `ticket`), all four asset/contact/rack/location modals, the client portal (`client/ticket.php`, `client/includes/header.php`), the admin user management views (`admin/users.php` + three user modals), the global top-nav, and the per-user details page. Net effect: 18 sites switched to `/photo.php?type=...&id=...`.
+
+`uploads/.htaccess` is now **fully default-deny**: the image-extension allowlist from phase 13 is gone. Direct `GET /uploads/clients/<X>/<Y>.jpg` returns 403 from Apache without any PHP involvement. PHP-side `readfile`/`file_get_contents` paths inside `agent/file_download.php` and `photo.php` are unaffected because they read the bytes via the filesystem, not via Apache.
+
+### Known limitation
+`guest/guest_view_ticket.php` still constructs direct `/uploads/...` paths for share-link viewers who have no authenticated session. After this phase those `<img>` tags 404 → graceful fallback to initials. This is documented behavior, not a regression. Token-based access for guest views is a future phase.
+
+### Why now
+Phase 13 closed the file-download gap but left an explicit image-extension allowlist in `uploads/.htaccess` so that profile/asset/rack/location photos kept working. That allowlist meant: if someone has the URL (browser cache, screenshot, ex-employee bookmark, archived email), they fetch the photo with no session check, no ACL, no audit. Random 16-char reference filenames make the URLs unguessable but don't help once a URL has leaked. For NIS2 / GDPR alignment around personal-data photos this was a real gap. This phase closes it.
+
+### Cumulative
+Tests unchanged (147/0). No new self-test added because the endpoint exercises existing primitives (session check + DB lookup + finfo + readfile) that are already covered by phase-13 tests.
+
+### Operator action required
+- After deploy: confirm a contact-photo `<img>` renders (server returns 200 from `/photo.php?type=contact&id=...`). Test that an unauthenticated curl against `/uploads/clients/X/photo.jpg` returns 403.
+- Optional: review `security_audit_log` for `photo.access.denied` after letting it run a few hours. Spike here means a stale link or a buggy access pattern.
+
 ## v0.14.1-nis2-files — Phase 13C reverted
 
 `document_content` (and `document_versions.document_version_content`) are no

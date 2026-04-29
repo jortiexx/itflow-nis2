@@ -79,7 +79,7 @@
                 <?php if (empty($session_avatar)) { ?>
                 <i class="fas fa-user-circle mr-1"></i>
                 <?php }else{ ?>
-                <img src="<?php echo "/uploads/users/$session_user_id/$session_avatar"; ?>"
+                <img src="<?php echo "/photo.php?type=user&id=$session_user_id"; ?>"
                     class="user-image img-circle">
                 <?php } ?>
                 <span
@@ -92,7 +92,7 @@
                     <i class="fas fa-user-circle fa-6x"></i>
                     <?php }else{ ?>
 
-                    <img src="<?php echo "/uploads/users/$session_user_id/$session_avatar"; ?>" class="img-circle">
+                    <img src="<?php echo "/photo.php?type=user&id=$session_user_id"; ?>" class="img-circle">
                     <?php } ?>
                     <p>
                         <?php echo stripslashes(nullable_htmlentities($session_name)); ?>
