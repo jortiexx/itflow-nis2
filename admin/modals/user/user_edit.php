@@ -179,28 +179,95 @@ ob_start();
 
             <div class="tab-pane fade" id="pills-user-access<?php echo $user_id; ?>">
 
-                <div class="alert alert-info">
+                <div class="alert alert-info small">
                     Check boxes to authorize user client access. No boxes grant full client access. Admin users are unaffected.
                 </div>
 
-                <ul class="list-group">
-                    <li class="list-group-item bg-dark">
+                <?php
+                // Phase 11+: scalable UI for many clients. Pull tags once so we can
+                // emit data-tag-ids on each row for tag-filtered bulk actions.
+                $tag_rs = mysqli_query($mysqli,
+                    "SELECT tag_id, tag_name FROM tags WHERE tag_type = 1 AND tag_archived_at IS NULL ORDER BY tag_name ASC");
+                $all_tags = [];
+                while ($t = mysqli_fetch_assoc($tag_rs)) $all_tags[] = $t;
+
+                // tag_id sets per client_id
+                $client_tag_map = [];
+                $ct_rs = mysqli_query($mysqli, "SELECT client_id, tag_id FROM client_tags");
+                while ($r = mysqli_fetch_assoc($ct_rs)) {
+                    $client_tag_map[intval($r['client_id'])][] = intval($r['tag_id']);
+                }
+                ?>
+
+                <!-- Search + bulk action toolbar -->
+                <div class="form-row align-items-center mb-2">
+                    <div class="col-md-6 mb-2">
+                        <div class="input-group input-group-sm">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text"><i class="fa fa-search"></i></span>
+                            </div>
+                            <input type="text" class="form-control client-access-search"
+                                   placeholder="Filter clients..." autocomplete="off"
+                                   data-target="#client-access-list-<?= $user_id ?>">
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-2 text-right">
+                        <small class="text-muted client-access-counter mr-2"
+                               data-target="#client-access-list-<?= $user_id ?>">0 of 0 selected</small>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button type="button" class="btn btn-outline-secondary client-access-bulk"
+                                    data-target="#client-access-list-<?= $user_id ?>"
+                                    data-action="check-visible">Check visible</button>
+                            <button type="button" class="btn btn-outline-secondary client-access-bulk"
+                                    data-target="#client-access-list-<?= $user_id ?>"
+                                    data-action="uncheck-visible">Uncheck visible</button>
+                        </div>
+                    </div>
+                </div>
+
+                <?php if (!empty($all_tags)): ?>
+                <div class="form-row mb-2 align-items-center">
+                    <label class="col-form-label col-form-label-sm mr-2 ml-1">By tag:</label>
+                    <div class="col">
+                        <?php foreach ($all_tags as $t): ?>
+                            <button type="button" class="btn btn-outline-info btn-sm mb-1 client-access-by-tag"
+                                    data-tag-id="<?= intval($t['tag_id']) ?>"
+                                    data-target="#client-access-list-<?= $user_id ?>">
+                                <?= nullable_htmlentities($t['tag_name']) ?>
+                            </button>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <small class="form-text text-muted mb-2">
+                    Click a tag once to select all clients with that tag. Click again to deselect them.
+                </small>
+                <?php endif; ?>
+
+                <ul class="list-group" id="client-access-list-<?= $user_id ?>"
+                    style="max-height: 50vh; overflow-y: auto;">
+                    <li class="list-group-item bg-dark sticky-top">
                         <div class="form-check">
-                            <input type="checkbox" class="form-check-input" onclick="this.closest('.tab-pane').querySelectorAll('.client-checkbox').forEach(checkbox => checkbox.checked = this.checked);">
-                            <label class="form-check-label ml-3"><strong>Restrict Access to Clients</strong></label>
+                            <input type="checkbox" class="form-check-input client-access-check-all"
+                                   data-target="#client-access-list-<?= $user_id ?>">
+                            <label class="form-check-label ml-3">
+                                <strong>Restrict Access to Clients</strong>
+                                <small class="text-muted"> &mdash; check the toggle to select all (or filter first)</small>
+                            </label>
                         </div>
                     </li>
 
                     <?php
 
-                    $sql_client_select = mysqli_query($mysqli, "SELECT * FROM clients WHERE client_archived_at IS NULL ORDER BY client_name ASC");
+                    $sql_client_select = mysqli_query($mysqli, "SELECT client_id, client_name FROM clients WHERE client_archived_at IS NULL ORDER BY client_name ASC");
                     while ($row = mysqli_fetch_assoc($sql_client_select)) {
                         $client_id_select = intval($row['client_id']);
                         $client_name_select = nullable_htmlentities($row['client_name']);
+                        $tag_ids_for_client = $client_tag_map[$client_id_select] ?? [];
+                        $tag_ids_attr = implode(',', $tag_ids_for_client);
 
                     ?>
 
-                    <li class="list-group-item">
+                    <li class="list-group-item client-access-row" data-client-name="<?= htmlentities(strtolower($row['client_name'])) ?>" data-tag-ids="<?= $tag_ids_attr ?>">
                         <div class="form-check">
                             <input type="checkbox" class="form-check-input client-checkbox" name="clients[]" value="<?php echo $client_id_select; ?>" <?php if (in_array($client_id_select, $client_access_array)) { echo "checked"; } ?>>
                             <label class="form-check-label ml-2"><?php echo $client_name_select; ?></label>
@@ -237,6 +304,106 @@ function generatePassword() {
         }
     );
 }
+
+// Phase 11+: scalable client-access UI. Search filter, bulk toggle on
+// visible rows, tag-based bulk select. All client-side; the form data
+// structure (clients[] checkboxes) is unchanged so the existing POST
+// handler keeps working.
+(function () {
+    function getList(target) {
+        return document.querySelector(target);
+    }
+    function visibleRows(list) {
+        return Array.from(list.querySelectorAll('.client-access-row'))
+            .filter(function (row) { return row.style.display !== 'none'; });
+    }
+    function updateCounter(target) {
+        var list = getList(target);
+        if (!list) return;
+        var all = list.querySelectorAll('.client-checkbox');
+        var checked = list.querySelectorAll('.client-checkbox:checked');
+        var counter = document.querySelector('.client-access-counter[data-target="' + target + '"]');
+        if (counter) counter.textContent = checked.length + ' of ' + all.length + ' selected';
+    }
+
+    document.querySelectorAll('.client-access-search').forEach(function (input) {
+        input.addEventListener('input', function () {
+            var target = input.dataset.target;
+            var list = getList(target);
+            if (!list) return;
+            var q = input.value.toLowerCase().trim();
+            list.querySelectorAll('.client-access-row').forEach(function (row) {
+                var name = row.dataset.clientName || '';
+                row.style.display = (q === '' || name.indexOf(q) !== -1) ? '' : 'none';
+            });
+        });
+    });
+
+    document.querySelectorAll('.client-access-bulk').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var target = btn.dataset.target;
+            var list = getList(target);
+            if (!list) return;
+            var checked = btn.dataset.action === 'check-visible';
+            visibleRows(list).forEach(function (row) {
+                var cb = row.querySelector('.client-checkbox');
+                if (cb) cb.checked = checked;
+            });
+            updateCounter(target);
+        });
+    });
+
+    document.querySelectorAll('.client-access-by-tag').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var target = btn.dataset.target;
+            var list = getList(target);
+            if (!list) return;
+            var tag_id = btn.dataset.tagId;
+
+            // Determine if we're checking or unchecking — based on whether
+            // ALL matching clients are currently checked.
+            var matches = Array.from(list.querySelectorAll('.client-access-row')).filter(function (row) {
+                var ids = (row.dataset.tagIds || '').split(',').filter(function (x) { return x; });
+                return ids.indexOf(tag_id) !== -1;
+            });
+            var allChecked = matches.length > 0 && matches.every(function (row) {
+                var cb = row.querySelector('.client-checkbox');
+                return cb && cb.checked;
+            });
+            matches.forEach(function (row) {
+                var cb = row.querySelector('.client-checkbox');
+                if (cb) cb.checked = !allChecked;
+            });
+            updateCounter(target);
+        });
+    });
+
+    document.querySelectorAll('.client-access-check-all').forEach(function (master) {
+        master.addEventListener('change', function () {
+            var target = master.dataset.target;
+            var list = getList(target);
+            if (!list) return;
+            // Apply only to visible rows so search + master-toggle compose.
+            visibleRows(list).forEach(function (row) {
+                var cb = row.querySelector('.client-checkbox');
+                if (cb) cb.checked = master.checked;
+            });
+            updateCounter(target);
+        });
+    });
+
+    document.querySelectorAll('.client-checkbox').forEach(function (cb) {
+        cb.addEventListener('change', function () {
+            var list = cb.closest('ul.list-group');
+            if (list && list.id) updateCounter('#' + list.id);
+        });
+    });
+
+    // Initialise counters on load.
+    document.querySelectorAll('.client-access-counter').forEach(function (counter) {
+        updateCounter(counter.dataset.target);
+    });
+})();
 
 </script>
 
