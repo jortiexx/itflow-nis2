@@ -24,15 +24,20 @@ if (isset($_POST['add_document'])) {
 
     $document_id = mysqli_insert_id($mysqli);
 
-    $processed_content = mysqli_escape_string(
-        $mysqli,
-        saveBase64Images(
-            $_POST['content'],
-            $_SERVER['DOCUMENT_ROOT'] . "/uploads/documents/",
-            "uploads/documents/",
-            $document_id
-        )
+    $processed_content_plain = saveBase64Images(
+        $_POST['content'],
+        $_SERVER['DOCUMENT_ROOT'] . "/uploads/documents/",
+        "uploads/documents/",
+        $document_id
     );
+
+    // Phase 13 (C): encrypt document_content with the per-client master key.
+    // Falls back to plaintext if the vault is locked (lazy-migration model).
+    $processed_content_for_storage = encryptCredentialEntry($processed_content_plain, $client_id);
+    if ($processed_content_for_storage === false || $processed_content_for_storage === null) {
+        $processed_content_for_storage = $processed_content_plain;
+    }
+    $processed_content = mysqli_real_escape_string($mysqli, $processed_content_for_storage);
 
     // Document update content
     mysqli_query($mysqli,"UPDATE documents SET document_content = '$processed_content' WHERE document_id = $document_id");
@@ -108,7 +113,12 @@ if (isset($_POST['add_document_from_template'])) {
     $processed_html = str_replace($oldPath, $newPath, $template_content_html);
 
     // 4) Prepare content + content_raw
-    $content = mysqli_real_escape_string($mysqli, $processed_html);
+    // Phase 13 (C): encrypt document_content before storage.
+    $content_for_storage = encryptCredentialEntry($processed_html, $client_id);
+    if ($content_for_storage === false || $content_for_storage === null) {
+        $content_for_storage = $processed_html;
+    }
+    $content = mysqli_real_escape_string($mysqli, $content_for_storage);
 
     $content_raw = sanitizeInput(
         $document_name . " " . str_replace("<", " <", $processed_html)
@@ -163,6 +173,9 @@ if (isset($_POST['edit_document'])) {
 
     $original_document_name        = sanitizeInput($row['document_name']);
     $original_document_description = sanitizeInput($row['document_description']);
+    // The current document_content may already be encrypted (v3) — keep it
+    // ciphertext-as-stored when copying it into the version row, so the
+    // version table inherits encryption transparently.
     $original_document_content     = mysqli_real_escape_string($mysqli, $row['document_content']);
     $original_document_created_by  = intval($row['document_created_by']);
     $original_document_updated_by  = intval($row['document_updated_by']);
@@ -207,8 +220,14 @@ if (isset($_POST['edit_document'])) {
         $document_id
     );
 
-    // Escape for DB
-    $content = mysqli_real_escape_string($mysqli, $processed_html);
+    // Phase 13 (C): encrypt document_content before storage. content_raw is
+    // intentionally left as plaintext because it backs the FULLTEXT index
+    // used by document search (agent/files.php, global_search.php).
+    $content_for_storage = encryptCredentialEntry($processed_html, $client_id);
+    if ($content_for_storage === false || $content_for_storage === null) {
+        $content_for_storage = $processed_html;
+    }
+    $content = mysqli_real_escape_string($mysqli, $content_for_storage);
 
     // Rebuild content_raw for full-text search
     $content_raw = sanitizeInput(
@@ -697,8 +716,9 @@ if (isset($_GET['export_document'])) {
     $sql = mysqli_query($mysqli,"SELECT document_name, document_content, document_client_id FROM documents WHERE document_id = $document_id");
     $row = mysqli_fetch_assoc($sql);
     $document_name = sanitizeInput($row['document_name']);
-    $document_content = $row['document_content'];
     $client_id = intval($row['document_client_id']);
+    // Phase 13 (C): decrypt if stored encrypted; passthrough otherwise.
+    $document_content = decryptOptionalField($row['document_content'], $client_id);
 
     enforceClientAccess();
 

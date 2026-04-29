@@ -40,7 +40,11 @@ $row = mysqli_fetch_assoc($sql_document);
 if ($row) {
     $document_id = intval($row['document_id']);
     $document_name = nullable_htmlentities($row['document_name']);
-    $document_content = $purifier->purify($row['document_content']);
+    // Phase 13 (C): documents may be encrypted at rest. The client portal
+    // session does not have a per-user grant — decryptOptionalField will
+    // pass through plaintext docs and fall back to v2 (shared master)
+    // when the row carries an encryption prefix.
+    $document_content = $purifier->purify(decryptOptionalField($row['document_content'], $session_client_id));
     $document_description = nullable_htmlentities($row['document_description']);
 } else {
     header("Location: post.php?logout");

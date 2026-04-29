@@ -815,6 +815,7 @@ ob_start();
                             <tbody>
                             <?php
                             while ($row = mysqli_fetch_assoc($sql_linked_files)) {
+                                $file_id = intval($row['file_id']);
                                 $file_name = nullable_htmlentities($row['file_name']);
                                 $file_description = nullable_htmlentities($row['file_description']);
                                 $file_size = nullable_htmlentities($row['file_size']);
@@ -823,11 +824,11 @@ ob_start();
                                 $file_mime_type = nullable_htmlentities($row['file_mime_type']);
                                 $file_created_at = nullable_htmlentities($row['file_created_at']);
 
-                                $linked_files[] = intval($row['file_id']);
+                                $linked_files[] = $file_id;
                                 ?>
                                 <tr>
                                     <td>
-                                        <div><a href="../uploads/clients/<?= $client_id ?>/<?= $file_reference_name ?>" target="_blank"><?= $file_name ?></a></div>
+                                        <div><a href="file_download.php?id=<?= $file_id ?>&inline=1" target="_blank"><?= $file_name ?></a></div>
                                         <div class="text-secondary"><?= $file_description ?></div>
                                     </td>
                                     <td><?= $file_mime_type ?></td>

@@ -2,7 +2,87 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 12: encrypt OTP secret + credential note
+## v0.14.0-nis2-files — Phase 13: file storage hardening
+
+Closes the six known weaknesses in how ITFlow stores client-uploaded files and document bodies on disk and in the database. The data path is now: PHP-mediated download with ACL + audit, AES-256-GCM at rest under the per-client master key, server-side MIME validation, integrity hash verified on every fetch, and a retention sweeper for old document versions.
+
+### A. PHP-mediated file download (`agent/file_download.php`)
+Direct linking to `/uploads/clients/X/Y` is gone. Every file fetch now goes through `agent/file_download.php?id=N` (or `&inline=1` for `<img>`). The endpoint:
+1. Authenticates via `check_login`.
+2. Verifies the user has app-layer access to the file's client (admin OR matching `user_client_permissions` row OR unrestricted user).
+3. Reads the disk blob from `uploads/clients/<client_id>/<reference_name>`.
+4. Decrypts if `file_encrypted = 1` (phase-13 uploads); falls through if the row is pre-13 plaintext.
+5. Verifies the SHA-256 if `file_sha256` is set — refuses to serve a tampered file (audits `file.integrity.failed`).
+6. Audits `file.download` (or `file.download.denied` / `file.download.decrypt_failed`).
+7. Streams with `Content-Disposition`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`.
+
+URLs replaced across the agent UI: `agent/asset_details.php`, `agent/contact_details.php`, `agent/files.php` (5 sites), `agent/global_search.php`, `agent/quote.php`, `agent/modals/asset/asset_details.php`, `agent/modals/contact/contact_details.php`.
+
+### B. Encrypt files at rest (per-client master key)
+New helper `includes/file_storage.php`:
+- `encryptFileAtRest($plaintext, $client_id, $mysqli)` returns `[ciphertext, iv (12 bytes), tag (16 bytes)]` using AES-256-GCM under the per-client master key (HKDF-expanded to 32 bytes).
+- `decryptFileAtRest(...)` reverses it; returns `null` on auth-tag failure.
+
+`agent/post/file.php`'s `upload_files` handler now: validates MIME → reads the plaintext bytes → hashes them → encrypts → writes ciphertext to disk → unlinks the tmp plaintext copy → persists `file_encrypted=1`, `file_encryption_iv`, `file_encryption_tag`, `file_sha256`, `file_mime_verified` via a prepared `INSERT` (binary-safe for VARBINARY columns).
+
+If the vault is locked at upload time (no client master derivable), the file falls through to plaintext storage and the event is audited as `file.upload.encryption_unavailable`. The download path handles both rows uniformly.
+
+### C. Encrypt `document_content` + `document_versions.document_version_content`
+At write: `agent/post/document.php` (`add_document`, `add_document_from_template`, `edit_document`) now wraps `document_content` with `encryptCredentialEntry($content, $client_id)` (the same v3 path used for credential passwords). When new versions are minted, the existing ciphertext is copied verbatim into `document_versions` — no re-encryption, no plaintext exposure window.
+
+At read: `agent/document_details.php`, `agent/modals/document/document_view.php`, `agent/modals/document/document_version_view.php`, `agent/modals/document/document_edit.php`, the PDF-export path in `agent/post/document.php`, plus client portal sites `client/document.php` and `guest/guest_view_item.php` all wrap reads in `decryptOptionalField($row['document_content'], $client_id)`. Pre-13 plaintext rows pass through untouched (lazy migration).
+
+`document_content_raw` is intentionally **not** encrypted because it backs the `FULLTEXT` index used by document search (`agent/files.php` and `agent/global_search.php`). This is a documented trade-off — encrypted full-text search would require either client-side index encryption or per-client search compartmentalisation, both of which are out of scope for this phase.
+
+### D. SHA-256 integrity hash on every file
+`fileHashSha256($plaintext)` returns 32 raw bytes; computed at upload (over the plaintext, before encryption) and stored in `files.file_sha256` (`VARBINARY(32)`). The download endpoint re-hashes after decrypt and refuses to serve on mismatch. This catches both at-rest tampering and decryption returning corrupted plaintext.
+
+### E. Document-version retention pruning (`scripts/document_version_prune.php`)
+New CLI script. Reads `settings.config_document_version_retention_days` (default 365). Deletes `document_versions` rows older than the cutoff. Supports `--dry-run` and `--verbose`. Always emits a `document_version.prune` audit record summarising the run. Intended for nightly cron.
+
+### F. Server-side MIME validation
+`fileVerifyMimeMatchesExtension($tmp_path, $extension)` opens the uploaded tmp file with `finfo`, looks up the claimed extension in a 40-entry allowlist, and confirms the detected MIME starts with one of the expected prefixes. Rejects:
+- extension not in the allowlist
+- detected MIME inconsistent with the extension (a renamed-EXE-as-PNG)
+
+`agent/post/file.php` now invokes this **before** moving the upload, audits rejections as `file.upload.mime_rejected`, and stores the detected MIME in `files.file_mime_verified`. Browser-supplied `$_FILES['type']` is no longer trusted as authoritative.
+
+### Schema (DB version 2.4.4.10)
+```sql
+ALTER TABLE files
+  ADD COLUMN file_encrypted          TINYINT(1)     NOT NULL DEFAULT 0,
+  ADD COLUMN file_encryption_iv      VARBINARY(12)  NULL,
+  ADD COLUMN file_encryption_tag     VARBINARY(16)  NULL,
+  ADD COLUMN file_sha256             VARBINARY(32)  NULL,
+  ADD COLUMN file_mime_verified      VARCHAR(100)   NULL;
+ALTER TABLE settings
+  ADD COLUMN config_document_version_retention_days INT NOT NULL DEFAULT 365;
+```
+
+`uploads/.htaccess` is now default-deny: only image extensions (`jpg|jpeg|png|gif|webp|svg|ico`) are served directly (for asset/contact/rack/location photos that do not yet live in the `files` table). Everything else — PDFs, ZIPs, Office docs, scripts — must come through `file_download.php`.
+
+### Self-test (`scripts/phase13_self_test.php`)
+21 offline tests:
+- SHA-256: length, reference vector, distinctness, stability
+- AES-256-GCM round-trip: encrypt/decrypt with the same `expandMasterKeyToAes256` path the helper uses
+- Tamper detection: flipped ciphertext bit, flipped tag bit, wrong key
+- MIME validation: plain text accepted, valid PNG accepted, PNG-claiming-PDF rejected, extension-not-in-allowlist rejected
+- 64 KB blob round-trip + SHA verification across plaintext vs ciphertext
+
+### Cumulative
+**147 / 0 failures** across 12 suites: crypto 20, Entra SSO 11, vault PIN 5, vault PRF 7, vault enrolment 6, audit log 6, WebAuthn 15, client master keys 13, keypair 15, phase 11 13, phase 12 15, phase 13 21.
+
+### Migration
+- Run database update: `2.4.4.9 → 2.4.4.10` adds the new columns. Existing files keep working with `file_encrypted = 0` until the next time they're uploaded — there is no bulk re-encryption of historical content.
+- Existing documents continue to read/write transparently; new edits encrypt.
+- `uploads/.htaccess` default-deny may break custom workflows that depended on direct linking outside the files table — review that table.
+
+### Operator action required
+- After deploy: open an existing client, upload a new file, confirm `files.file_encrypted = 1`, `file_encryption_iv` is 12 bytes, `file_sha256` is 32 bytes. Download via the new endpoint; check that an `audit.file.download` record appears in `security_audit_log`.
+- Confirm document edit + view round-trips; check that `documents.document_content` of a freshly-saved doc starts with `v3:`.
+- Schedule `scripts/document_version_prune.php` (e.g. nightly cron). Optionally adjust `config_document_version_retention_days` in the settings row.
+
+## v0.13.0-nis2-phase12 — Phase 12: encrypt OTP secret + credential note
 
 Two credential fields that are routinely used to store secrets but were never encrypted at the application layer are now wrapped with the same per-client v3 path used for `credential_username` / `credential_password`:
 

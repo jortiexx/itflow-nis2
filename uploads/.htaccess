@@ -1,7 +1,28 @@
-Options -ExecCGI
+# Phase 13: deny direct access to uploaded files. All file fetches must go
+# through /agent/file_download.php (which handles ACL + decrypt + audit).
+#
+# Photos that are *not* in the files table (asset/contact/rack/location/avatar
+# images) still need direct access; allow only safe image extensions.
+# Anything else - PDFs, ZIPs, Office docs, scripts - is denied.
+
+Options -Indexes -ExecCGI
 php_flag engine off
 RemoveHandler .php .phtml .phar .phps
 RemoveType .php .phtml .phar .phps
-<FilesMatch "\.(php|phtml|phar|phps|cgi|pl|sh)$">
+
+# Hard-deny any executable / scriptable type that should never be served raw.
+<FilesMatch "\.(php|phtml|phar|phps|cgi|pl|sh|py|rb|asp|aspx|jsp|exe|bat|ps1)$">
   Require all denied
+</FilesMatch>
+
+# Default-deny all files in this directory tree.
+<FilesMatch ".*">
+  Require all denied
+</FilesMatch>
+
+# Allow only the small set of image extensions used for non-encrypted
+# profile/asset/rack/location photos. These are referenced by direct URL
+# from pages that don't go through the files table.
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|svg|ico)$">
+  Require all granted
 </FilesMatch>

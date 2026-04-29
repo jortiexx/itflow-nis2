@@ -1053,7 +1053,7 @@ if (isset($_GET['contact_id'])) {
 
                                 <tr>
                                     <td>
-                                        <div><a href="../uploads/clients/<?php echo $client_id; ?>/<?php echo $file_reference_name; ?>"><?php echo $file_name; ?></a></div>
+                                        <div><a href="file_download.php?id=<?php echo $file_id; ?>&inline=1" target="_blank"><?php echo $file_name; ?></a></div>
                                         <div class="text-secondary"><?php echo $file_description; ?></div>
                                     </td>
                                     <td><?php echo $file_mime_type; ?></td>

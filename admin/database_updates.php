@@ -4617,6 +4617,24 @@ if (LATEST_DATABASE_VERSION > CURRENT_DATABASE_VERSION) {
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.9'");
     }
 
+    // 2.4.4.9 -> 2.4.4.10: phase 13 — file storage hardening
+    //   - PHP-mediated file download (no direct uploads/* URLs)
+    //   - File encryption at rest (per-client master key)
+    //   - SHA256 integrity hash on every file
+    //   - Document content encryption + version retention
+    //   - Server-side MIME validation
+    if (CURRENT_DATABASE_VERSION == '2.4.4.9') {
+        mysqli_query($mysqli, "ALTER TABLE `files`
+            ADD COLUMN `file_encrypted` TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN `file_encryption_iv` VARBINARY(12) NULL DEFAULT NULL,
+            ADD COLUMN `file_encryption_tag` VARBINARY(16) NULL DEFAULT NULL,
+            ADD COLUMN `file_sha256` VARBINARY(32) NULL DEFAULT NULL,
+            ADD COLUMN `file_mime_verified` VARCHAR(100) NULL DEFAULT NULL");
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_document_version_retention_days` INT NOT NULL DEFAULT 365");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.10'");
+    }
+
 } else {
     // Up-to-date
 }
