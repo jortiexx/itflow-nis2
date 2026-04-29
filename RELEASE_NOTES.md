@@ -2,6 +2,33 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.14.1-nis2-files — Phase 13C reverted
+
+`document_content` (and `document_versions.document_version_content`) are no
+longer encrypted at the application layer. The `agent/post/document.php`
+write paths are restored to plaintext storage. Reasoning: a document body
+is *content*, not a bearer secret. Encrypting it duplicated work that
+belongs at the infrastructure layer (encrypted filesystem, encrypted DB
+backups), broke the FULLTEXT search index alignment, and silently degraded
+the client-portal / API document-read paths. This contradicted the line
+established in phase 12 — app-layer encryption is for bearer secrets
+(credential password, OTP seed, credential note); content-shaped fields
+rely on infra-layer at-rest protection.
+
+The read sites (`agent/document_details.php`, the four document modals,
+`client/document.php`, `guest/guest_view_item.php`, the PDF-export path)
+keep `decryptOptionalField` as a transitional shim — it is a passthrough
+for plaintext rows and decrypts any leftover v3 rows from the brief window
+phase-13C was deployed. No data migration required; on the next save each
+document falls back to plaintext naturally. The shim can be removed in a
+later cleanup pass.
+
+The other phase-13 items (A file-download endpoint, B file at-rest
+encryption, D SHA-256 integrity, E version retention pruning, F MIME
+validation) are unchanged. The decision boundary is: file uploads
+frequently *are* bearer material (`.pfx`, `.ovpn`, exported password
+lists), so B is consistent with the principle. Document bodies are not.
+
 ## v0.14.0-nis2-files — Phase 13: file storage hardening
 
 Closes the six known weaknesses in how ITFlow stores client-uploaded files and document bodies on disk and in the database. The data path is now: PHP-mediated download with ACL + audit, AES-256-GCM at rest under the per-client master key, server-side MIME validation, integrity hash verified on every fetch, and a retention sweeper for old document versions.

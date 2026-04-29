@@ -17,6 +17,7 @@ $sql = mysqli_query($mysqli, "SELECT * FROM documents WHERE document_id = $docum
 $row = mysqli_fetch_assoc($sql);
 $document_name = nullable_htmlentities($row['document_name']);
 $document_client_id = intval($row['document_client_id'] ?? 0);
+// Transitional: tolerates legacy v3 rows from the brief phase-13C window.
 $document_content = $purifier->purify(decryptOptionalField($row['document_content'], $document_client_id));
 
 

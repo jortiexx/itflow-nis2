@@ -10,7 +10,7 @@ $row = mysqli_fetch_assoc($sql);
 $document_name = nullable_htmlentities($row['document_name']);
 $document_description = nullable_htmlentities($row['document_description']);
 $client_id = intval($row['document_client_id']);
-// Phase 13 (C): decrypt before piping into the TinyMCE editor.
+// Transitional: tolerates legacy v3 rows from the brief phase-13C window.
 $document_content = nullable_htmlentities(decryptOptionalField($row['document_content'], $client_id));
 $document_folder_id = intval($row['document_folder_id']);
 $document_client_visible = intval($row['document_client_visible']);

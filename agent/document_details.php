@@ -35,6 +35,7 @@ $row = mysqli_fetch_assoc($sql_document);
 $folder_name = nullable_htmlentities($row['folder_name']);
 $document_name = nullable_htmlentities($row['document_name']);
 $document_description = nullable_htmlentities($row['document_description']);
+// Transitional: tolerates legacy v3 rows from the brief phase-13C window.
 $document_content = $purifier->purify(decryptOptionalField($row['document_content'], intval($row['document_client_id'] ?? 0)));
 $document_created_by_id = intval($row['document_created_by']);
 $document_created_by_name = nullable_htmlentities($row['user_name']);

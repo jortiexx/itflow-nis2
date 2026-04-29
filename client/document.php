@@ -40,10 +40,9 @@ $row = mysqli_fetch_assoc($sql_document);
 if ($row) {
     $document_id = intval($row['document_id']);
     $document_name = nullable_htmlentities($row['document_name']);
-    // Phase 13 (C): documents may be encrypted at rest. The client portal
-    // session does not have a per-user grant — decryptOptionalField will
-    // pass through plaintext docs and fall back to v2 (shared master)
-    // when the row carries an encryption prefix.
+    // Transitional: tolerates legacy v3 rows from the brief phase-13C window.
+    // Going forward document_content is stored as plaintext; this is a no-op
+    // passthrough for plaintext rows.
     $document_content = $purifier->purify(decryptOptionalField($row['document_content'], $session_client_id));
     $document_description = nullable_htmlentities($row['document_description']);
 } else {

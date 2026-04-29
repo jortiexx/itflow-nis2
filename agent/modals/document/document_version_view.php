@@ -21,6 +21,7 @@ $sql = mysqli_query($mysqli,
 $row = mysqli_fetch_assoc($sql);
 $document_version_name = nullable_htmlentities($row['document_version_name']);
 $document_client_id = intval($row['document_client_id'] ?? 0);
+// Transitional: tolerates legacy v3 rows from the brief phase-13C window.
 $document_version_content = $purifier->purify(decryptOptionalField($row['document_version_content'], $document_client_id));
 
 
