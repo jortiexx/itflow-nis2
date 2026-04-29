@@ -198,12 +198,17 @@ if (!function_exists('sweepLegacyFilesForClient')) {
             $sha256 = fileHashSha256($plaintext);
 
             // Server-side MIME so we can populate file_mime_verified for
-            // rows that pre-date that column being filled.
+            // rows that pre-date that column being filled. Use finfo_buffer
+            // on the bytes we already read — finfo_file($disk_path) would
+            // race with the LOCK_EX we hold on $fh (Windows uses mandatory
+            // locking, so a second open of the same path returns 'Permission
+            // denied' and PHP emits warnings that leak into the JSON AJAX
+            // response, breaking the migration progress UI).
             $detected_mime = null;
             if (function_exists('finfo_open')) {
                 $f = finfo_open(FILEINFO_MIME_TYPE);
                 if ($f) {
-                    $d = finfo_file($f, $disk_path);
+                    $d = @finfo_buffer($f, $plaintext);
                     if ($d) $detected_mime = $d;
                     finfo_close($f);
                 }
