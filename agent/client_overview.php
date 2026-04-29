@@ -379,8 +379,8 @@ $sql_asset_retired = mysqli_query(
                         $credential_username_display = "$credential_username<button class='btn btn-sm clipboardjs' type='button' data-clipboard-text='$credential_username'><i class='far fa-copy text-secondary'></i></button>";
                     }
                     $credential_password = nullable_htmlentities(decryptCredentialEntry($row['credential_password'], $row['credential_client_id']));
-                    $credential_otp_secret = nullable_htmlentities($row['credential_otp_secret']);
-                    $credential_id_with_secret = '"' . $row['credential_id'] . '","' . $row['credential_otp_secret'] . '"';
+                    $credential_otp_secret = nullable_htmlentities(decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']));
+                    $credential_id_with_secret = '"' . $row['credential_id'] . '","' . decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']) . '"';
                     if (empty($credential_otp_secret)) {
                         $otp_display = "";
                     } else {

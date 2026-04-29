@@ -1611,7 +1611,7 @@ if (isset($_POST["export_client_pdf"])) {
             $credential_description = getFallback(nullable_htmlentities($row["credential_description"]));
             $credential_username = nullable_htmlentities(decryptCredentialEntry($row["credential_username"], $row["credential_client_id"]));
             $credential_password = nullable_htmlentities(decryptCredentialEntry($row["credential_password"], $row["credential_client_id"]));
-            $credential_totp_secret = getFallback(nullable_htmlentities($row['credential_otp_secret']));
+            $credential_totp_secret = getFallback(nullable_htmlentities(decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id'])));
             $credential_uri = getFallback(nullable_htmlentities($row["credential_uri"]));
             $html .= "
             <tr>

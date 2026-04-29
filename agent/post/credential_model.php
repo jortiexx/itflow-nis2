@@ -10,8 +10,16 @@ $uri_2 = sanitizeInput($_POST['uri_2']);
 // the encrypt to the per-client master key (phase 9, v3 ciphertexts).
 $username = encryptCredentialEntry(trim($_POST['username']), $client_id ?? null);
 $password = encryptCredentialEntry(trim($_POST['password']), $client_id ?? null);
-$otp_secret = sanitizeInput($_POST['otp_secret']);
-$note = sanitizeInput($_POST['note']);
+// Phase 12: TOTP seed and notes are now encrypted with the same per-client
+// path. Empty input stays empty (no encryption of zero bytes).
+$_otp_secret_plain = trim((string)($_POST['otp_secret'] ?? ''));
+$_note_plain       = trim((string)($_POST['note'] ?? ''));
+$otp_secret = $_otp_secret_plain === ''
+    ? ''
+    : mysqli_real_escape_string($mysqli, encryptCredentialEntry($_otp_secret_plain, $client_id ?? null));
+$note = $_note_plain === ''
+    ? ''
+    : mysqli_real_escape_string($mysqli, encryptCredentialEntry($_note_plain, $client_id ?? null));
 $favorite = intval($_POST['favorite'] ?? 0);
 $contact_id = intval($_POST['contact'] ?? 0);
 $asset_id = intval($_POST['asset'] ?? 0);

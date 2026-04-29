@@ -1466,6 +1466,28 @@ function isCredentialV3(string $stored): bool
 }
 
 /**
+ * Read a credential field that may be encrypted (v2/v3) or stored as
+ * plaintext (legacy, pre-phase-12). Used for credential_otp_secret and
+ * credential_note — fields that were never encrypted before phase 12
+ * but are now encrypted on every new save.
+ *
+ * Returns the plaintext value (decrypted if needed), or the original
+ * input if it doesn't carry an encryption prefix. Empty/null in → out.
+ */
+function decryptOptionalField($value, $client_id = null): string
+{
+    if ($value === null || $value === '') {
+        return '';
+    }
+    $value = (string)$value;
+    if (isCredentialV2($value) || isCredentialV3($value)) {
+        $pt = decryptCredentialEntry($value, $client_id);
+        return ($pt === false || $pt === null) ? '' : (string)$pt;
+    }
+    return $value;
+}
+
+/**
  * Read or lazily create a client's master key.
  *
  * Requires the session master key (vault unlocked). Returns the raw

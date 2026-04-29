@@ -450,7 +450,8 @@ if (isset($_POST['export_credentials_csv'])) {
         while($row = mysqli_fetch_assoc($sql)){
             $credential_username = decryptCredentialEntry($row['credential_username'], $row['credential_client_id']);
             $credential_password = decryptCredentialEntry($row['credential_password'], $row['credential_client_id']);
-            $lineData = array($row['credential_name'], $row['credential_description'], $credential_username, $credential_password, $row['credential_otp_secret'], $row['credential_uri']);
+            $credential_otp_secret_plain = decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']);
+            $lineData = array($row['credential_name'], $row['credential_description'], $credential_username, $credential_password, $credential_otp_secret_plain, $row['credential_uri']);
             fputcsv($f, $lineData, $delimiter, $enclosure, $escape);
         }
 

@@ -61,8 +61,15 @@ if (isset($_POST['credential_password'])) {
     $password_changed = false;
 }
 
+// Phase 12: encrypt otp_secret + note on write (per-client v3 path).
+// Pre-existing rows from $credential_row may already be ciphertext from
+// previous saves — pass them through unchanged.
 if (isset($_POST['credential_otp_secret'])) {
-    $otp_secret = sanitizeInput($_POST['credential_otp_secret']);
+    $_otp_plain = trim((string)$_POST['credential_otp_secret']);
+    $otp_secret = $_otp_plain === ''
+        ? ''
+        : mysqli_real_escape_string($mysqli,
+            apiEncryptCredentialEntry($_otp_plain, $api_key_row ?? $api_key_decrypt_hash, $api_key_decrypt_password, $client_id ?? null));
 } elseif (isset($credential_row) && isset($credential_row['credential_otp_secret'])) {
     $otp_secret = mysqli_real_escape_string($mysqli, $credential_row['credential_otp_secret']);
 } else {
@@ -70,7 +77,11 @@ if (isset($_POST['credential_otp_secret'])) {
 }
 
 if (isset($_POST['credential_note'])) {
-    $note = sanitizeInput($_POST['credential_note']);
+    $_note_plain = trim((string)$_POST['credential_note']);
+    $note = $_note_plain === ''
+        ? ''
+        : mysqli_real_escape_string($mysqli,
+            apiEncryptCredentialEntry($_note_plain, $api_key_row ?? $api_key_decrypt_hash, $api_key_decrypt_password, $client_id ?? null));
 } elseif (isset($credential_row) && isset($credential_row['credential_note'])) {
     $note = mysqli_real_escape_string($mysqli, $credential_row['credential_note']);
 } else {

@@ -332,14 +332,14 @@ $num_rows = mysqli_fetch_row(mysqli_query($mysqli, "SELECT FOUND_ROWS()"));
                                 $credential_username_display = "$credential_username<button class='btn btn-sm clipboardjs' type='button' data-clipboard-text='$credential_username'><i class='far fa-copy text-secondary'></i></button>";
                             }
                             $credential_password = nullable_htmlentities(decryptCredentialEntry($row['credential_password'], $row['credential_client_id']));
-                            $credential_otp_secret = nullable_htmlentities($row['credential_otp_secret']);
-                            $credential_id_with_secret = '"' . $row['credential_id'] . '","' . $row['credential_otp_secret'] . '"';
+                            $credential_otp_secret = nullable_htmlentities(decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']));
+                            $credential_id_with_secret = '"' . $row['credential_id'] . '","' . decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']) . '"';
                             if (empty($credential_otp_secret)) {
                                 $otp_display = "-";
                             } else {
                                 $otp_display = "<span onmouseenter='showOTPViaCredentialID($credential_id)'><i class='far fa-clock'></i> <span id='otp_$credential_id'><i>Hover..</i></span></span>";
                             }
-                            $credential_note = nullable_htmlentities($row['credential_note']);
+                            $credential_note = nullable_htmlentities(decryptOptionalField($row['credential_note'], $row['credential_client_id']));
                             $credential_created_at = nullable_htmlentities($row['credential_created_at']);
                             $credential_archived_at = nullable_htmlentities($row['credential_archived_at']);
                             $credential_favorite = intval($row['credential_favorite']);

@@ -2,7 +2,55 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
-## Unreleased — Phase 11: Closing the three Phase 10 gaps
+## Unreleased — Phase 12: encrypt OTP secret + credential note
+
+Two credential fields that are routinely used to store secrets but were never encrypted at the application layer are now wrapped with the same per-client v3 path used for `credential_username` / `credential_password`:
+
+- `credentials.credential_otp_secret` — the TOTP seed
+- `credentials.credential_note` — the free-text notes field where operators frequently paste extra passwords or instructions
+
+### Why these two
+
+TOTP seeds are bearer secrets that generate second-factor codes. A leaked seed = ongoing 2FA bypass. Notes are unstructured text that operators in practice use to store recovery codes, secondary credentials, and "the database root password is ..." tips. Both deserve the same protection as the password column.
+
+(`software.software_license_key` was considered and dropped: license keys are identifiers, not bearer secrets — vendors enforce licence usage via online activation, not via key secrecy.)
+
+### How
+
+New helper `decryptOptionalField($value, $client_id)`:
+- empty / null → empty string
+- starts with `v2:` or `v3:` → run `decryptCredentialEntry`
+- anything else (legacy plaintext) → return as-is
+
+The asymmetry vs `decryptCredentialEntry` matters: `credential_otp_secret` and `credential_note` were stored as plain text since installation, so falling into the v1 path (which assumes a 16-byte IV prefix) would garble them.
+
+Write side, `agent/post/credential_model.php` and `api/v1/credentials/credential_model.php`: when these fields come in via POST, encrypt with `encryptCredentialEntry` / `apiEncryptCredentialEntry` (per-client v3 path).
+
+Read side, all 13 call sites under `agent/` updated to wrap reads in `decryptOptionalField($row['credential_*'], $row['credential_client_id'])`. Includes the `credential_id_with_secret` JS-data-attribute pattern that several pages use to embed the seed for client-side TOTP code generation, and `agent/ajax.php`'s `get_totp_token_via_id` endpoint.
+
+### Migration
+Lazy. Existing rows stay plaintext until next save. Save a credential, OTP and note become v3-encrypted automatically.
+
+### Bug fix bundled
+`agent/modals/credential/credential_view.php` was calling `decryptLoginEntry()` — a function that doesn't exist anywhere in the codebase. Replaced with `decryptCredentialEntry($..., $row['credential_client_id'])`. This had been broken in the credential view modal since at least Phase 9; nobody noticed because most credential reading happens via other modals.
+
+### Self-test (`scripts/phase12_self_test.php`)
+15 offline tests:
+- empty / null pass-through
+- legacy plaintext (TOTP-style, multi-line note, alphanumeric) unchanged
+- prefix detection (v2/v3 routing decisions)
+- v3 round-trip via low-level helper
+- note round-trip preserves whitespace and special characters
+
+### Cumulative
+**126 / 0 failures** across 11 suites: crypto 20, Entra SSO 11, vault PIN 5, vault PRF 7, vault enrolment 6, audit log 6, WebAuthn 15, client master keys 13, keypair 15, phase 11 13, phase 12 15.
+
+### Operator action required
+- No database migration in this phase.
+- Existing OTP secrets and notes keep working as plaintext until the credential is saved again.
+- After deploy: edit and save any credential to test that OTP + note round-trip; check the DB column starts with `v3:` after the save.
+
+## v0.12.0-nis2-phase11 — Phase 11: Closing the three Phase 10 gaps
 
 Closes the three known limitations from Phase 10:
 

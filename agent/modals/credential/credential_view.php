@@ -11,16 +11,16 @@ $credential_name = nullable_htmlentities($row['credential_name']);
 $credential_description = nullable_htmlentities($row['credential_description']);
 $credential_uri = nullable_htmlentities($row['credential_uri']);
 $credential_uri_2 = nullable_htmlentities($row['credential_uri_2']);
-$credential_username = nullable_htmlentities(decryptLoginEntry($row['credential_username']));
-$credential_password = nullable_htmlentities(decryptLoginEntry($row['credential_password']));
-$credential_otp_secret = nullable_htmlentities($row['credential_otp_secret']);
-$credential_id_with_secret = '"' . $row['credential_id'] . '","' . $row['credential_otp_secret'] . '"';
+$credential_username = nullable_htmlentities(decryptCredentialEntry($row['credential_username'], $row['credential_client_id']));
+$credential_password = nullable_htmlentities(decryptCredentialEntry($row['credential_password'], $row['credential_client_id']));
+$credential_otp_secret = nullable_htmlentities(decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']));
+$credential_id_with_secret = '"' . $row['credential_id'] . '","' . decryptOptionalField($row['credential_otp_secret'], $row['credential_client_id']) . '"';
 if (empty($credential_otp_secret)) {
     $otp_display = "-";
 } else {
     $otp_display = "<span onmouseenter='showOTPViaCredentialID($credential_id)'><i class='far fa-clock'></i> <span id='otp_$credential_id'><i>Hover..</i></span></span>";
 }
-$credential_note = nullable_htmlentities($row['credential_note']);
+$credential_note = nullable_htmlentities(decryptOptionalField($row['credential_note'], $row['credential_client_id']));
 $credential_created_at = nullable_htmlentities($row['credential_created_at']);
 
 // Generate the HTML form content using output buffering.

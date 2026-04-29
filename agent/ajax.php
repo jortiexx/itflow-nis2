@@ -400,8 +400,10 @@ if (isset($_GET['get_totp_token_via_id'])) {
 
     $sql = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT credential_name, credential_otp_secret, credential_client_id FROM credentials WHERE credential_id = $credential_id"));
     $name = sanitizeInput($sql['credential_name']);
-    $totp_secret = $sql['credential_otp_secret'];
     $client_id = intval($sql['credential_client_id']);
+    // Phase 12: otp_secret may be encrypted; decryptOptionalField passes
+    // legacy plaintext through unchanged.
+    $totp_secret = decryptOptionalField($sql['credential_otp_secret'], $client_id);
 
     $otp = TokenAuth6238::getTokenCode(strtoupper($totp_secret));
     echo json_encode($otp);
