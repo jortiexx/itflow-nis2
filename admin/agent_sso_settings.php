@@ -35,15 +35,137 @@ $roles = mysqli_query($mysqli, "SELECT role_id, role_name FROM user_roles WHERE 
     </div>
     <div class="card-body">
 
-        <div class="alert alert-info small">
-            <strong>Setup:</strong> register a new application in your Entra ID tenant
-            (App registrations → New registration). Set the redirect URI (Web platform) to:
-            <code><?= htmlentities($auto_redirect_uri) ?></code>.
-            Add a client secret under <em>Certificates &amp; secrets</em>. No API permissions are required
-            beyond the default <code>User.Read</code>; sign-in uses the OIDC <code>id_token</code> directly.
-            For tenant-side access control, use Enterprise Applications → Users and groups
-            and require user assignment.
+        <div class="alert alert-info">
+            <div class="d-flex justify-content-between align-items-start">
+                <div class="small">
+                    <strong>Setup:</strong> register a new application in your Entra ID tenant.
+                    The Setup helper has a copy-paste PowerShell snippet that does this for you, or
+                    walk through the portal manually. Redirect URI for this install:
+                    <code id="ssoRedirectUri"><?= htmlentities($auto_redirect_uri) ?></code>
+                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 ml-2"
+                            onclick="navigator.clipboard.writeText(document.getElementById('ssoRedirectUri').textContent); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)">Copy</button>
+                </div>
+                <button type="button" class="btn btn-info btn-sm ml-3 flex-shrink-0"
+                        data-toggle="modal" data-target="#ssoSetupHelper">
+                    <i class="fa fa-fw fa-magic mr-1"></i>Setup helper
+                </button>
+            </div>
         </div>
+
+<?php
+// PowerShell snippet, redirect URI baked in for this install.
+$_ps_redirect = $redirect_uri ?: $auto_redirect_uri;
+$_ps_snippet = <<<PS
+# 1) Sign in as an Entra admin (device-code flow opens a browser tab)
+az login --use-device-code --allow-no-subscriptions
+
+# 2) Capture tenant id from the active session
+\$tenant_id = (az account show --query tenantId -o tsv)
+
+# 3) Create the app + a 24-month client secret. Redirect URI is hard-coded
+#    for this ITFlow install.
+\$redirect = "{$_ps_redirect}"
+\$app = az ad app create ``
+    --display-name "ITFlow Agent SSO" ``
+    --sign-in-audience AzureADMyOrg ``
+    --web-redirect-uris \$redirect ``
+    --enable-id-token-issuance true ``
+    --output json --only-show-errors | ConvertFrom-Json
+\$client_id     = \$app.appId
+\$app_object_id = \$app.id
+
+\$end_date = (Get-Date).AddMonths(24).ToString("yyyy-MM-ddTHH:mm:ssZ")
+\$secret = az ad app credential reset ``
+    --id \$app_object_id ``
+    --display-name "itflow-sso" ``
+    --end-date \$end_date ``
+    --output json --only-show-errors | ConvertFrom-Json
+
+# 4) Print the values to paste back into the form below
+Write-Host "Tenant ID:     \$tenant_id"        -ForegroundColor Green
+Write-Host "Client ID:     \$client_id"        -ForegroundColor Green
+Write-Host "Client Secret: \$(\$secret.password)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "(The secret is shown once. Paste these three values into Admin -> Agent SSO settings.)"
+PS;
+?>
+
+<!-- Setup helper modal -->
+<div class="modal fade" id="ssoSetupHelper" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header bg-info">
+                <h5 class="modal-title text-white"><i class="fa fa-fw fa-magic mr-2"></i>Entra app registration helper</h5>
+                <button type="button" class="close text-white" data-dismiss="modal"><span>&times;</span></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary">
+                    Two paths — pick whichever feels less painful. Both end with three values
+                    (Tenant ID, Client ID, Client Secret) that you paste into the form on this page.
+                </p>
+
+                <ul class="nav nav-tabs" role="tablist">
+                    <li class="nav-item">
+                        <a class="nav-link active" data-toggle="tab" href="#ssoHelperPS" role="tab">
+                            <i class="fa fa-fw fa-terminal mr-1"></i>PowerShell (recommended)
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-toggle="tab" href="#ssoHelperPortal" role="tab">
+                            <i class="fa fa-fw fa-globe mr-1"></i>Azure portal
+                        </a>
+                    </li>
+                </ul>
+
+                <div class="tab-content border border-top-0 p-3">
+
+                    <div class="tab-pane fade show active" id="ssoHelperPS" role="tabpanel">
+                        <p class="small text-secondary">
+                            Run this on any machine with <a href="https://learn.microsoft.com/cli/azure/install-azure-cli-windows" target="_blank">Azure CLI</a> installed.
+                            Sign-in is via device-code flow, so you log in as Entra admin in your normal browser session.
+                            The script creates the app, generates a 24-month secret, and prints the three values.
+                        </p>
+                        <div class="position-relative">
+                            <button type="button" class="btn btn-sm btn-outline-secondary position-absolute" style="top:8px; right:8px;"
+                                    onclick="const t=document.getElementById('ssoPsSnippet').textContent; navigator.clipboard.writeText(t); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)">Copy</button>
+                            <pre style="background:#1e1e1e; color:#dcdcdc; padding:1rem; border-radius:4px; max-height:380px; overflow:auto;"><code id="ssoPsSnippet"><?= htmlspecialchars($_ps_snippet) ?></code></pre>
+                        </div>
+                        <p class="small text-secondary mb-0">
+                            Don't have Azure CLI? <code>winget install -e --id Microsoft.AzureCLI --accept-source-agreements --accept-package-agreements</code>.
+                        </p>
+                    </div>
+
+                    <div class="tab-pane fade" id="ssoHelperPortal" role="tabpanel">
+                        <p class="small text-secondary">Walk through the Azure portal manually. ~6 clicks.</p>
+                        <ol class="small">
+                            <li>
+                                <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank">
+                                    Open <strong>App registrations</strong> in Entra <i class="fa fa-fw fa-external-link-alt"></i>
+                                </a>
+                                → click <strong>+ New registration</strong>.
+                            </li>
+                            <li>Name: <code>ITFlow Agent SSO</code>. Supported account types: <strong>Accounts in this organizational directory only</strong>.</li>
+                            <li>
+                                Redirect URI — Platform: <strong>Web</strong>; URI:
+                                <code><?= htmlentities($_ps_redirect) ?></code>
+                                <button type="button" class="btn btn-sm btn-outline-secondary py-0 ml-1"
+                                        onclick="navigator.clipboard.writeText('<?= htmlentities($_ps_redirect, ENT_QUOTES) ?>'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500)">Copy</button>
+                            </li>
+                            <li>Click <strong>Register</strong>. Copy <em>Directory (tenant) ID</em> + <em>Application (client) ID</em> from the Overview page → paste into the form below.</li>
+                            <li>Left nav → <strong>Certificates &amp; secrets</strong> → <strong>+ New client secret</strong>. Description: <code>itflow-sso</code>; expiry: 24 months. Copy the <strong>Value</strong> (the secret, NOT the secret ID) → paste below.</li>
+                            <li>Left nav → <strong>Authentication</strong> → under "Implicit grant and hybrid flows" tick <strong>ID tokens (used for implicit and hybrid flows)</strong> → Save.</li>
+                            <li>(Recommended) <a href="https://entra.microsoft.com/#view/Microsoft_AAD_IAM/StartboardApplicationsMenuBlade/~/AppAppsPreview" target="_blank">Enterprise applications <i class="fa fa-fw fa-external-link-alt"></i></a> → ITFlow Agent SSO → <strong>Properties</strong> → <em>Assignment required?</em> = Yes; then <strong>Users and groups</strong> → assign the agents who should be able to sign in.</li>
+                        </ol>
+                    </div>
+
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 
         <form action="post.php" method="post" autocomplete="off">
             <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
