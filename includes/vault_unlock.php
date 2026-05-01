@@ -733,7 +733,19 @@ function requireFreshVaultUnlock(int $max_age_seconds = VAULT_STEP_UP_DEFAULT_SE
     if (vaultStepUpFresh($max_age_seconds)) {
         return;
     }
-    $return_to = $_SERVER['REQUEST_URI'] ?? '/';
+    // For POST requests the REQUEST_URI is the form-handler path (e.g.
+    // /admin/post.php) which is useless to come back to — its POST body is
+    // gone after the redirect. Fall back to the Referer instead so the
+    // operator lands on the page that submitted the form.
+    $return_to = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+        ? (string)($_SERVER['HTTP_REFERER'] ?? '/')
+        : (string)($_SERVER['REQUEST_URI'] ?? '/');
+    if (preg_match('#^https?://[^/]+(/.*)$#', $return_to, $m)) {
+        $return_to = $m[1];
+    }
+    if (!preg_match('#^/(agent|admin)/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_to)) {
+        $return_to = '/agent/clients.php';
+    }
     header('Location: /agent/vault_unlock.php?step_up=1&return_to=' . urlencode($return_to));
     exit;
 }

@@ -11,6 +11,7 @@ require_once __DIR__ . '/../../includes/vault_unlock.php';
 if (isset($_POST['add_api_key'])) {
 
     validateCSRFToken($_POST['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: bearer-secret lifecycle
 
     $name = sanitizeInput($_POST['name']);
     $expire = sanitizeInput($_POST['expire']);
@@ -80,6 +81,7 @@ if (isset($_POST['add_api_key'])) {
 if (isset($_GET['revoke_api_key'])) {
 
     validateCSRFToken($_GET['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: bearer-secret lifecycle
 
     $api_key_id = intval($_GET['revoke_api_key']);
 
@@ -101,6 +103,7 @@ if (isset($_GET['revoke_api_key'])) {
 if (isset($_GET['delete_api_key'])) {
 
     validateCSRFToken($_GET['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: bearer-secret lifecycle
 
     $api_key_id = intval($_GET['delete_api_key']);
 
@@ -122,6 +125,7 @@ if (isset($_GET['delete_api_key'])) {
 if (isset($_POST['bulk_delete_api_keys'])) {
 
     validateCSRFToken($_POST['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: bearer-secret lifecycle
 
     if (isset($_POST['api_key_ids'])) {
 

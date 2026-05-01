@@ -414,8 +414,12 @@ if (isset($_POST['bulk_delete_credentials'])) {
 if (isset($_POST['export_credentials_csv'])) {
 
     validateCSRFToken($_POST['csrf_token']);
-
     enforceUserPermission('module_credential');
+    // Phase 18: bulk credential export = entire client's bearer secrets
+    // landing on the operator's disk. Force step-up so this is a deliberate,
+    // recently-confirmed action.
+    require_once __DIR__ . '/../../includes/vault_unlock.php';
+    requireFreshVaultUnlock();
 
     if ($_POST['client_id']) {
         $client_id = intval($_POST['client_id']);

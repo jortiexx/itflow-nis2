@@ -101,6 +101,10 @@ if (isset($_GET['force_vault_reenrol'])) {
         flash_alert('CSRF token mismatch.', 'danger');
         redirect();
     }
+    // Phase 18: paradoxical but correct — wiping another user's unlock methods
+    // is high blast-radius. Admin must re-prove identity first so a stolen
+    // admin session can't lock everyone out of their vaults.
+    requireFreshVaultUnlock();
 
     $target_user_id = intval($_GET['user_id'] ?? 0);
     if ($target_user_id <= 0) {
@@ -399,6 +403,7 @@ if (isset($_GET['revoke_remember_me'])) {
 if (isset($_POST['archive_user'])) {
 
     validateCSRFToken($_POST['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: cascades vault methods + grants
 
     $user_id = intval($_POST['user_id']);
     $ticket_assign = intval($_POST['ticket_assign']);
@@ -456,6 +461,12 @@ if (isset($_POST['archive_user'])) {
 if (isset($_POST['restore_user'])) {
 
     validateCSRFToken($_POST['csrf_token']);
+    // Step-up only required when the admin is also setting a new password
+    // (which regenerates the wrap). Plain status-flip restore is light enough
+    // to skip the friction.
+    if (!empty(trim($_POST['new_password'] ?? ''))) {
+        requireFreshVaultUnlock();
+    }
 
     $user_id = intval($_POST['user_id']);
     $new_password = trim($_POST['new_password']);
@@ -546,6 +557,7 @@ if (isset($_POST['ir_reset_user_password'])) {
     // Incident response: allow mass reset of agent passwords
 
     validateCSRFToken($_POST['csrf_token']);
+    requireFreshVaultUnlock();  // phase 18: regenerates master-wrap for every agent
 
     // Confirm logged-in user password, for security
     $admin_password = $_POST['admin_password'];

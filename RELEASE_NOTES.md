@@ -2,6 +2,104 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+## v0.18.0-nis2-vault-hardening — Phase 18: vault hardening
+
+Closes the open technical gaps from a security review of phase 13–17: AAD on
+authenticated encryption, GCM at the session layer, vault idle TTL with
+step-up freshness, FIDO2 metadata capture, hardware-bound attestation policy,
+per-account exponential lockout, and a self-service kill-switch. See
+`docs/vault-runbook.md` for the operator playbook.
+
+### Schema (DB version 2.4.4.13)
+Eight columns on `user_vault_unlock_methods`:
+- `kdf_version` — distinguishes legacy AAD-less wraps from current
+- `cose_alg`, `aaguid`, `backup_eligible`, `backup_state`, `transports` — FIDO2 metadata
+- `disabled_at`, `disabled_by_user_id` — kill-switch
+
+Two columns on `users`:
+- `vault_consecutive_failures`, `vault_locked_until` — per-account lockout
+
+Three columns on `settings`:
+- `config_vault_idle_ttl_seconds` (default 1800)
+- `config_vault_lockout_max_seconds` (default 3600)
+- `config_require_hardware_bound_authenticators` (default 0)
+
+### Crypto changes
+- `cryptoEncryptV2` / `cryptoDecryptV2` accept optional AAD; vault wraps now
+  bind ciphertext to `user_id` via `vaultWrapAad()`. Lazy-migrates on next
+  successful unlock (PIN + PRF paths both handle legacy + current side-by-side
+  during transition).
+- Session-layer wrap of master key + privkey moved from AES-128-CBC (no auth
+  tag) to AES-256-GCM with user-bound AAD. New helper `sessionUnwrapMasterKey()`
+  centralises decryption; legacy CBC fallback retained for in-flight sessions
+  and auto-upgrades on next login.
+- `vaultDeriveKekFromPrf()` v2 mixes `user_id` into HKDF info and uses the
+  per-method `prf_salt` as HKDF salt for defence-in-depth.
+
+### Lifecycle controls
+- Idle TTL: `vault_unlocked_at` touched on every credential read; vault
+  re-locks after `config_vault_idle_ttl_seconds` of inactivity.
+- Step-up freshness: separate `vault_step_up_at` timestamp set only by an
+  explicit unlock ceremony (PIN re-prompt, PRF re-tap, fresh login). Default
+  300 s window before step-up is required again.
+- `requireFreshVaultUnlock(int $max_age = 300)` redirects to
+  `/agent/vault_unlock.php?step_up=1&return_to=...` when the window expires.
+  POST flows return to the Referer to preserve operator context.
+
+### Step-up wired at the destructive perimeter
+The mechanism is intentionally **not** wired everywhere. Step-up gates passive
+risk (idle session, walk-away); against an active attacker with a stolen
+session it only delays. Wiring it everywhere would force operators to re-prompt
+every credential reveal (~30–50/day per agent), driving them to workarounds
+(browser-cached PIN, longer sessions, fatigue-blind clicking). The endpoints
+that *do* require step-up are the ones where one click has high blast-radius:
+
+| Endpoint | Why |
+|---|---|
+| `admin/post/api_keys.php → add_api_key` | Mints long-lived bearer that bypasses MFA |
+| `admin/post/api_keys.php → revoke_api_key` | Silent revocation of bearer access |
+| `admin/post/api_keys.php → delete_api_key` | Same |
+| `admin/post/api_keys.php → bulk_delete_api_keys` | Mass revocation |
+| `admin/post/users.php → archive_user` | Cascades unlock methods + grants |
+| `admin/post/users.php → restore_user` (with new password) | Regenerates user wrap |
+| `admin/post/users.php → ir_reset_user_password` | Mass IR action across all agents |
+| `admin/post/users.php → force_vault_reenrol` | Wipes another user's unlock methods |
+| `agent/post/credential.php → export_credentials_csv` | Bulk bearer secrets to operator disk |
+
+Routine reads (single credential reveal, file download, list pages, AJAX) are
+**not** gated. See `docs/vault-runbook.md` for the threat-model rationale.
+
+### FIDO2 metadata + policy
+- `webauthnVerifyRegistration()` returns `aaguid`, `backup_eligible`,
+  `backup_state`. JS-side captures `transports` via `response.getTransports()`.
+- `vault_unlock_prf_verify` uses stored `cose_alg` instead of trial-and-error;
+  backfills NULL for pre-phase-18 rows on first successful unlock.
+- Hardware-bound policy: when `config_require_hardware_bound_authenticators`
+  is set, registering a credential with `BE=1` (synced passkey: iCloud
+  Keychain, Bitwarden, etc.) is rejected at registration time.
+
+### Per-account lockout with exponential backoff
+On top of the existing per-method 5-strike lockout, the helpers
+`vaultAccountSecondsUntilUnlock` / `Register` / `Clear` enforce a per-user
+backoff of `min(2^failures, config_vault_lockout_max_seconds)`. Wired into
+PIN + PRF unlock paths. Reset on success.
+
+### Kill-switch UI
+- Self-service: `agent/user/user_security.php` per-row Disable/Enable/Remove
+  buttons. Disabled rows are filtered out of PRF assertion options + lookup.
+- Admin-side: `admin/modals/user/user_edit.php` "Force vault re-enrolment"
+  button calls `vaultForceReenrol()` and emits
+  `securityAudit('vault.method.force_reenrol')`. Step-up gated.
+- `archive_user` now cascades unlock-method deletion and emits
+  `securityAudit('user.archive')` + `'grant.revoke'` with grants_revoked count.
+
+### What this does NOT do
+- Live FIDO MDS3 sync (AAGUID is captured for future blocklist support).
+- Master key rotation UI (existing CLI `scripts/reset_master_key.php` remains
+  the path; runbook covers when to use it).
+- Step-up on routine credential reveal / single file download (UX cost
+  outweighs benefit; see threat model in runbook).
+
 ## v0.17.0-nis2-ratelimits — Phase 16: configurable rate limits + API auth throttling
 
 Closes two of the technical gaps flagged at the end of phase 15:

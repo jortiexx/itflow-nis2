@@ -177,7 +177,7 @@ $start = $config_start_page ?? 'clients.php';
 // Phase 18: honour step-up return_to if same-origin /agent/.
 $return_raw = (string)($_POST['step_up_return_to'] ?? '');
 $redirect = "/agent/$start";
-if ($return_raw !== '' && preg_match('#^/agent/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_raw)) {
+if ($return_raw !== '' && preg_match('#^/(agent|admin)/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_raw)) {
     $redirect = $return_raw;
 }
 echo json_encode(['ok' => true, 'redirect' => $redirect]);

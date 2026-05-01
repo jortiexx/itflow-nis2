@@ -37,7 +37,7 @@ if (empty($_SESSION['user_id']) || empty($_SESSION['logged'])) {
 $is_step_up = !empty($_GET['step_up']);
 $return_to_raw = (string)($_GET['return_to'] ?? $_POST['return_to'] ?? '');
 $return_to = '';
-if ($return_to_raw !== '' && preg_match('#^/agent/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_to_raw)) {
+if ($return_to_raw !== '' && preg_match('#^/(agent|admin)/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_to_raw)) {
     $return_to = $return_to_raw;
 }
 
