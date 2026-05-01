@@ -68,8 +68,10 @@ if ($token === '') {
         // Push master key into session so the standard enrolment forms work.
         session_regenerate_id(true);
         generateUserSessionKey($master);
-        $_SESSION['vault_unlocked'] = true;
-        $_SESSION['csrf_token']     = randomString(32);
+        $_SESSION['vault_unlocked']    = true;
+        $_SESSION['vault_unlocked_at'] = time();
+        $_SESSION['vault_step_up_at']  = time();
+        $_SESSION['csrf_token']        = randomString(32);
 
         logAction('Vault', 'Enrolment redeemed', "$user_name redeemed magic-link vault enrolment", 0, $user_id);
         securityAudit('vault.enrolment.redeemed', [

@@ -31,6 +31,11 @@ if (isset($_POST['edit_security_settings'])) {
     $rl_pwreset_max    = max(1,  intval($_POST['config_ratelimit_pwreset_max']    ?? 5));
     $rl_pwreset_window = max(60, intval($_POST['config_ratelimit_pwreset_window'] ?? 3600));
 
+    // Phase 18: vault hardening knobs.
+    $vault_idle_ttl     = max(60, intval($_POST['config_vault_idle_ttl_seconds']      ?? 1800));
+    $vault_lockout_max  = max(60, intval($_POST['config_vault_lockout_max_seconds']   ?? 3600));
+    $require_hw_bound   = intval($_POST['config_require_hardware_bound_authenticators'] ?? 0) === 1 ? 1 : 0;
+
     mysqli_query($mysqli,
         "UPDATE settings SET
             config_login_message               = '$config_login_message',
@@ -48,7 +53,10 @@ if (isset($_POST['edit_security_settings'])) {
             config_ratelimit_api_max           = $rl_api_max,
             config_ratelimit_api_window        = $rl_api_window,
             config_ratelimit_pwreset_max       = $rl_pwreset_max,
-            config_ratelimit_pwreset_window    = $rl_pwreset_window
+            config_ratelimit_pwreset_window    = $rl_pwreset_window,
+            config_vault_idle_ttl_seconds              = $vault_idle_ttl,
+            config_vault_lockout_max_seconds           = $vault_lockout_max,
+            config_require_hardware_bound_authenticators = $require_hw_bound
          WHERE company_id = 1");
 
     logAction("Settings", "Edit", "$session_name edited security settings");

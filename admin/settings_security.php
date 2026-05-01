@@ -137,6 +137,46 @@ require_once "includes/inc_all_admin.php";
 
             <hr>
 
+            <h5 class="mb-2"><i class="fa fa-fw fa-vault mr-2 text-info"></i>Vault hardening</h5>
+            <p class="text-secondary small">
+                Phase 18: TTL on the unlocked-vault session, exponential backoff on failed unlocks, and a hardware-bound attestation policy.
+            </p>
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label>Vault idle timeout</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend"><span class="input-group-text"><i class="fa fa-fw fa-hourglass-half"></i></span></div>
+                            <input type="number" min="60" class="form-control" name="config_vault_idle_ttl_seconds" value="<?= intval($config_vault_idle_ttl_seconds) ?>">
+                            <div class="input-group-append"><span class="input-group-text">s</span></div>
+                        </div>
+                        <small class="text-secondary">Default 1800 s (30 min). The unlocked vault re-locks after this many seconds of no credential reads.</small>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label>Per-account lockout cap</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend"><span class="input-group-text"><i class="fa fa-fw fa-user-lock"></i></span></div>
+                            <input type="number" min="60" class="form-control" name="config_vault_lockout_max_seconds" value="<?= intval($config_vault_lockout_max_seconds) ?>">
+                            <div class="input-group-append"><span class="input-group-text">s</span></div>
+                        </div>
+                        <small class="text-secondary">Default 3600 s (1 h). Exponential backoff (2^failures) is clamped to this ceiling.</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="custom-control custom-switch">
+                    <input type="checkbox" class="custom-control-input" name="config_require_hardware_bound_authenticators" <?php if (!empty($config_require_hardware_bound_authenticators)) { echo "checked"; } ?> value="1" id="hwBound">
+                    <label class="custom-control-label" for="hwBound">Require hardware-bound authenticators (reject backup-eligible / synced passkeys)</label>
+                </div>
+                <small class="text-secondary d-block mt-1">When enabled, registering a FIDO2 credential whose <code>BE</code> flag is set (iCloud Keychain, Bitwarden, etc.) is refused. Use only with a hardware-only key fleet (YubiKey, Feitian, etc.).</small>
+            </div>
+
+            <hr>
+
             <button type="submit" name="edit_security_settings" class="btn btn-primary text-bold"><i class="fas fa-check mr-2"></i>Save</button>
 
         </form>

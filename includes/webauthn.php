@@ -21,9 +21,11 @@
 
 class WebAuthnException extends RuntimeException {}
 
-const WEBAUTHN_FLAG_USER_PRESENT  = 0x01;
-const WEBAUTHN_FLAG_USER_VERIFIED = 0x04;
-const WEBAUTHN_FLAG_AT            = 0x40; // attested credential data included
+const WEBAUTHN_FLAG_USER_PRESENT     = 0x01;
+const WEBAUTHN_FLAG_USER_VERIFIED    = 0x04;
+const WEBAUTHN_FLAG_BACKUP_ELIGIBLE  = 0x08; // BE — credential is multi-device-capable
+const WEBAUTHN_FLAG_BACKUP_STATE     = 0x10; // BS — credential is currently backed up / synced
+const WEBAUTHN_FLAG_AT               = 0x40; // attested credential data included
 
 // COSE algorithm IDs we support
 const COSE_ALG_ES256 = -7;
@@ -327,11 +329,31 @@ function webauthnVerifyRegistration(array $client, string $expected_challenge, s
 
     $pem = webauthnCoseKeyToPem($cose_pub);
 
+    // Phase 18: format AAGUID as RFC 4122 hex with dashes for storage.
+    $aaguid_raw = $auth['attestation']['aaguid'] ?? '';
+    $aaguid_hex = '';
+    if (strlen($aaguid_raw) === 16) {
+        $h = bin2hex($aaguid_raw);
+        $aaguid_hex = substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-'
+                    . substr($h, 12, 4) . '-' . substr($h, 16, 4) . '-' . substr($h, 20, 12);
+    }
+
+    $backup_eligible = ($auth['flags'] & WEBAUTHN_FLAG_BACKUP_ELIGIBLE) ? 1 : 0;
+    $backup_state    = ($auth['flags'] & WEBAUTHN_FLAG_BACKUP_STATE)    ? 1 : 0;
+
+    // Transports come from the JS-side response.getTransports() if the
+    // browser exposes it. Caller forwards as a comma list (e.g. "usb,nfc").
+    $transports = '';
+
     return [
-        'credential_id'  => $auth['attestation']['credential_id'],
-        'public_key_pem' => $pem,
-        'sign_count'     => $auth['sign_count'],
-        'alg'            => $alg,
+        'credential_id'   => $auth['attestation']['credential_id'],
+        'public_key_pem'  => $pem,
+        'sign_count'      => $auth['sign_count'],
+        'alg'             => $alg,
+        'aaguid'          => $aaguid_hex,
+        'backup_eligible' => $backup_eligible,
+        'backup_state'    => $backup_state,
+        'transports'      => $transports,
     ];
 }
 

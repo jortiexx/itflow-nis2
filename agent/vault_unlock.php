@@ -29,6 +29,18 @@ if (empty($_SESSION['user_id']) || empty($_SESSION['logged'])) {
     exit;
 }
 
+// Phase 18: step-up flow.
+//   - GET ?step_up=1&return_to=/agent/foo.php  → force re-prompt even if
+//     the vault is already unlocked, then redirect to return_to on success.
+//   - return_to is restricted to same-origin /agent paths to prevent
+//     open-redirect abuse.
+$is_step_up = !empty($_GET['step_up']);
+$return_to_raw = (string)($_GET['return_to'] ?? $_POST['return_to'] ?? '');
+$return_to = '';
+if ($return_to_raw !== '' && preg_match('#^/agent/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_to_raw)) {
+    $return_to = $return_to_raw;
+}
+
 $user_id   = intval($_SESSION['user_id']);
 $row       = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT user_name FROM users WHERE user_id = $user_id LIMIT 1"));
 $user_name = $row ? $row['user_name'] : '';
@@ -58,11 +70,20 @@ if (!$has_pin && !$has_prf) {
     exit;
 }
 
-// Already unlocked? Skip.
-if (vaultMasterKeyFromSession() !== null) {
-    $_SESSION['vault_unlocked'] = true;
+// Already unlocked? Skip — UNLESS this is a step-up request, in which case
+// we must re-prompt even though the vault is unlocked.
+if (!$is_step_up && vaultMasterKeyFromSession() !== null) {
+    $_SESSION['vault_unlocked']    = true;
+    $_SESSION['vault_unlocked_at'] = time();
     $start = $config_start_page ?? 'clients.php';
     header("Location: /agent/$start");
+    exit;
+}
+
+// Already step-up fresh? Skip the re-prompt and go straight to return_to.
+if ($is_step_up && vaultStepUpFresh() && vaultMasterKeyFromSession() !== null) {
+    $dest = $return_to !== '' ? $return_to : ('/agent/' . ($config_start_page ?? 'clients.php'));
+    header('Location: ' . $dest);
     exit;
 }
 
@@ -89,13 +110,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!empty($unlock['privkey'])) {
                 pushUserPrivkeyToSession($unlock['privkey']);
             }
-            $_SESSION['vault_unlocked'] = true;
-            $_SESSION['csrf_token'] = randomString(32);
+            $_SESSION['vault_unlocked']    = true;
+            $_SESSION['vault_unlocked_at'] = time();
+            $_SESSION['vault_step_up_at']  = time();  // phase 18: PIN re-prompt is freshness proof
+            $_SESSION['csrf_token']        = randomString(32);
             logAction('Vault', 'Unlock', "$user_name unlocked vault via PIN", 0, $user_id);
             securityAudit('vault.unlock.success', [
                 'user_id' => $user_id,
-                'metadata' => ['method' => 'pin', 'privkey_restored' => !empty($unlock['privkey'])],
+                'metadata' => ['method' => 'pin', 'privkey_restored' => !empty($unlock['privkey']),
+                               'step_up' => $is_step_up ? 1 : 0],
             ]);
+            if ($is_step_up && $return_to !== '') {
+                header('Location: ' . $return_to);
+                exit;
+            }
             $start = $config_start_page ?? 'clients.php';
             header("Location: /agent/$start");
             exit;
@@ -142,8 +170,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="card-body login-card-body">
 
             <p class="login-box-msg px-0">
-                <i class="fa fa-lock mr-2"></i>Unlock your vault
+                <?php if ($is_step_up): ?>
+                    <i class="fa fa-shield-alt mr-2 text-warning"></i>Confirm it&#39;s really you
+                <?php else: ?>
+                    <i class="fa fa-lock mr-2"></i>Unlock your vault
+                <?php endif; ?>
             </p>
+
+            <?php if ($is_step_up): ?>
+                <div class="alert alert-warning small mb-3">
+                    <strong>Step-up required.</strong> The action you&#39;re about to perform is high-value (bulk export, master-key operation, or another sensitive endpoint). Please re-prove your identity with your security key or PIN.
+                </div>
+            <?php endif; ?>
 
             <?php if ($error): ?>
                 <div class="alert alert-danger small"><?= htmlentities($error) ?></div>
@@ -155,7 +193,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             <?php if ($has_prf): ?>
                 <button type="button" id="vault_prf_unlock_btn"
-                        class="btn btn-primary btn-block mb-2" data-autostart="1">
+                        class="btn btn-primary btn-block mb-2"
+                        data-autostart="1"
+                        <?php if ($is_step_up && $return_to !== ''): ?>data-return-to="<?= htmlentities($return_to) ?>"<?php endif; ?>>
                     <i class="fas fa-fingerprint mr-2"></i>Unlock with security key
                 </button>
                 <div id="vault_prf_unlock_status" class="small text-center mb-3"></div>
@@ -170,6 +210,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php if ($has_pin): ?>
                 <form method="post" autocomplete="off">
                     <input type="hidden" name="csrf_token" value="<?= htmlentities($_SESSION['csrf_token']) ?>">
+                    <?php if ($is_step_up && $return_to !== ''): ?>
+                        <input type="hidden" name="return_to" value="<?= htmlentities($return_to) ?>">
+                    <?php endif; ?>
 
                     <div class="input-group mb-3">
                         <input type="password" class="form-control" name="pin"

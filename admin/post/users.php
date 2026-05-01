@@ -90,6 +90,49 @@ if (isset($_GET['send_vault_enrolment'])) {
     redirect();
 }
 
+// Phase 18: incident-response — wipe every vault unlock method for a user.
+// The user is locked out of credential reads until they redeem a fresh
+// enrolment link. The master key is NOT rotated; admin must run
+// scripts/reset_master_key.php separately if compromise is suspected.
+if (isset($_GET['force_vault_reenrol'])) {
+
+    validateAdminRole();
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_GET['csrf_token'] ?? '')) {
+        flash_alert('CSRF token mismatch.', 'danger');
+        redirect();
+    }
+
+    $target_user_id = intval($_GET['user_id'] ?? 0);
+    if ($target_user_id <= 0) {
+        flash_alert('Invalid user id.', 'danger');
+        redirect();
+    }
+
+    $target = mysqli_fetch_assoc(mysqli_query($mysqli,
+        "SELECT user_id, user_email, user_name FROM users WHERE user_id = $target_user_id LIMIT 1"));
+    if (!$target) {
+        flash_alert('Target user not found.', 'danger');
+        redirect();
+    }
+
+    $removed = vaultForceReenrol($target_user_id, $session_user_id, $mysqli);
+
+    logAction('Vault', 'Force re-enrol',
+        "$session_name forced vault re-enrolment for {$target['user_email']} ($removed methods removed)",
+        0, $target_user_id);
+    securityAudit('vault.method.force_reenrol', [
+        'actor_id'  => $session_user_id,
+        'target_id' => $target_user_id,
+        'metadata'  => [
+            'target_email'    => $target['user_email'],
+            'methods_removed' => $removed,
+        ],
+    ]);
+
+    flash_alert("Removed $removed unlock method(s) for {$target['user_name']}. They need a fresh enrolment link before they can read credentials again.", 'warning');
+    redirect();
+}
+
 if (isset($_POST['add_user'])) {
 
     validateCSRFToken($_POST['csrf_token']);
@@ -367,11 +410,42 @@ if (isset($_POST['archive_user'])) {
     mysqli_query($mysqli, "UPDATE tickets SET ticket_assigned_to = $ticket_assign WHERE ticket_assigned_to = $user_id AND ticket_closed_at IS NULL AND ticket_resolved_at IS NULL");
     mysqli_query($mysqli, "UPDATE recurring_tickets SET recurring_ticket_assigned_to = $ticket_assign WHERE recurring_ticket_assigned_to = $user_id");
 
+    // Phase 18: count grants up-front so the audit entry records the
+    // blast radius (clients this user could decrypt via grant).
+    $grants_count = 0;
+    $r_gc = mysqli_fetch_assoc(mysqli_query($mysqli,
+        "SELECT COUNT(*) AS n FROM user_client_grants WHERE user_id = $user_id"));
+    if ($r_gc) $grants_count = intval($r_gc['n']);
+
     // Archive user query - clear all wrapped key material and grants
     mysqli_query($mysqli, "UPDATE users SET user_name = '$user_name (archived)', user_password = '$password', user_status = 0, user_specific_encryption_ciphertext = '', user_specific_encryption_ciphertext_v2 = NULL, user_pubkey = NULL, user_privkey_wrapped = NULL, user_archived_at = NOW() WHERE user_id = $user_id");
     mysqli_query($mysqli, "DELETE FROM user_client_grants WHERE user_id = $user_id");
 
+    // Phase 18: also revoke this user's vault unlock methods. Without this,
+    // a re-activated row could still be unlocked by a stale FIDO2 key
+    // tied to the prior identity. Re-enrolment is required on restore.
+    mysqli_query($mysqli, "DELETE FROM user_vault_unlock_methods WHERE user_id = $user_id");
+
     logAction("User", "Archive", "$session_name archived user $user_name", 0, $user_id);
+
+    // Phase 18: emit a hash-chained audit entry so this is independently
+    // verifiable in the security_audit_log even if logs.* is tampered with.
+    securityAudit('user.archive', [
+        'actor_id' => $session_user_id,
+        'target_id' => $user_id,
+        'metadata' => [
+            'user_name'       => $user_name,
+            'grants_revoked'  => $grants_count,
+            'keypair_cleared' => true,
+        ],
+    ]);
+    if ($grants_count > 0) {
+        securityAudit('grant.revoke', [
+            'actor_id' => $session_user_id,
+            'target_id' => $user_id,
+            'metadata' => ['count' => $grants_count, 'reason' => 'user_archived'],
+        ]);
+    }
 
     flash_alert("User <strong>$user_name</strong> archived", 'error');
 

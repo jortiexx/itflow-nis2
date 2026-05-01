@@ -87,8 +87,27 @@ if ($master === null) {
 $user_id    = intval($_SESSION['user_id']);
 $cred_id    = webauthnB64UrlEncode($reg['credential_id']);
 
+// Phase 18: hardware-bound attestation policy. Reject backup-eligible
+// (synced/passkey) credentials when the operator requires hardware-only.
+$require_hw_bound = intval($GLOBALS['config_require_hardware_bound_authenticators'] ?? 0);
+if ($require_hw_bound && !empty($reg['backup_eligible'])) {
+    securityAudit('vault.method.rejected', [
+        'user_id'  => $user_id,
+        'metadata' => ['method_type' => 'webauthn_prf', 'reason' => 'backup_eligible_blocked',
+                       'aaguid' => $reg['aaguid'] ?? ''],
+    ]);
+    http_response_code(400);
+    exit(json_encode(['error' => 'This authenticator is backup-eligible (multi-device / synced passkey). Your operator policy requires a hardware-bound security key.']));
+}
+
 // Phase 11: wrap the user's privkey under the PRF KEK as well.
 $privkey_for_prf = userPrivkeyFromSession();
+
+// Phase 18: capture transports from the JS-side response if provided.
+$transports_csv = '';
+if (!empty($payload['response']['transports']) && is_array($payload['response']['transports'])) {
+    $transports_csv = substr(implode(',', array_map('strval', $payload['response']['transports'])), 0, 64);
+}
 
 try {
     $method_id = vaultStorePrfMethod(
@@ -102,7 +121,13 @@ try {
         intval($reg['sign_count']),
         $prf_salt,
         $label,
-        $mysqli
+        $mysqli,
+        [
+            'aaguid'          => $reg['aaguid']          ?? '',
+            'backup_eligible' => $reg['backup_eligible'] ?? 0,
+            'backup_state'    => $reg['backup_state']    ?? 0,
+            'transports'      => $transports_csv,
+        ]
     );
 } catch (Throwable $e) {
     error_log('vault PRF enroll insert failed: ' . $e->getMessage());

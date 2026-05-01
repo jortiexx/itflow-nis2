@@ -175,6 +175,21 @@ ob_start();
                         <i class="fa fa-envelope-open-text mr-2"></i>Send vault enrolment link
                     </a>
                 </div>
+
+                <div class="form-group">
+                    <label>Vault — incident response</label>
+                    <p class="small text-muted mb-2">
+                        Wipe every PIN and hardware unlock method for this user. Use this if you suspect a credential or device has been compromised — the user will be unable to unlock the vault until they redeem a new enrolment link.
+                    </p>
+                    <div class="alert alert-warning small mb-2">
+                        <strong>Heads up:</strong> revoking unlock methods does <em>not</em> rotate the master key. If you suspect the master key itself has leaked (DB dump, memory dump, malicious admin), also run <code>php scripts/reset_master_key.php</code> on the server — that re-encrypts every bearer secret under a new master.
+                    </div>
+                    <a href="post.php?force_vault_reenrol&user_id=<?= $user_id ?>&csrf_token=<?= urlencode($_SESSION['csrf_token']) ?>"
+                       class="btn btn-outline-danger btn-sm confirm-link"
+                       data-confirm="Wipe all vault unlock methods for this user? They will need a new enrolment link to access credentials.">
+                        <i class="fa fa-fw fa-user-shield mr-2"></i>Force vault re-enrolment
+                    </a>
+                </div>
             </div>
 
             <div class="tab-pane fade" id="pills-user-access<?php echo $user_id; ?>">

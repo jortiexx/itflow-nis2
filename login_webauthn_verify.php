@@ -122,6 +122,10 @@ $_SESSION['logged']     = true;
 
 if (!empty($pending['agent_master_key'])) {
     generateUserSessionKey($pending['agent_master_key']);
+    // Phase 18: WebAuthn 2FA confirms identity → step-up fresh.
+    $_SESSION['vault_unlocked']    = true;
+    $_SESSION['vault_unlocked_at'] = time();
+    $_SESSION['vault_step_up_at']  = time();
 }
 if (!empty($pending['agent_privkey'])) {
     pushUserPrivkeyToSession($pending['agent_privkey']);

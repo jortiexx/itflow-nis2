@@ -422,19 +422,9 @@ function setupFirstUserSpecificKey($user_password, $site_encryption_master_key) 
  * Password Changes: Will use the current info in the session.
 */
 function encryptUserSpecificKey($user_password) {
-    // Get the session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
-    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
-    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
-
-    if (empty($user_encryption_session_ciphertext) || empty($user_encryption_session_iv) || empty($user_encryption_session_key)) {
-        throw new RuntimeException('encryptUserSpecificKey: vault is locked (no session encryption material)');
-    }
-
-    // Decrypt the session key to get the master key
-    $site_encryption_master_key = openssl_decrypt($user_encryption_session_ciphertext, 'aes-128-cbc', $user_encryption_session_key, 0, $user_encryption_session_iv);
-    if ($site_encryption_master_key === false || strlen($site_encryption_master_key) !== 16) {
-        throw new RuntimeException('encryptUserSpecificKey: could not retrieve a valid master key from session');
+    $site_encryption_master_key = sessionUnwrapMasterKey();
+    if ($site_encryption_master_key === null || strlen($site_encryption_master_key) !== 16) {
+        throw new RuntimeException('encryptUserSpecificKey: vault is locked or master key invalid');
     }
 
     $iv   = random_bytes(16);
@@ -505,26 +495,80 @@ Generates what is probably best described as a session key (ephemeral-ish)
 - Ciphertext/IV is stored on the server in the users' session, encryption key is controlled/provided by the user as a cookie
 - Only the user can decrypt their session ciphertext to get the master key
 - Encryption key never hits the disk in cleartext
+
+Phase 18: upgraded from AES-128-CBC (no auth tag) to AES-256-GCM with
+AAD bound to the user_id. New cookie is 32 raw bytes encoded base64url.
+Legacy CBC sessions remain readable for one session lifetime via the
+sessionUnwrapMasterKey() fallback path; on next login they migrate to GCM.
 */
 function generateUserSessionKey($site_encryption_master_key)
 {
-    $user_encryption_session_key = randomString();
-    $user_encryption_session_iv = randomString();
-    $user_encryption_session_ciphertext = openssl_encrypt($site_encryption_master_key, 'aes-128-cbc', $user_encryption_session_key, 0, $user_encryption_session_iv);
-
-    // Store ciphertext in the user's session
-    $_SESSION['user_encryption_session_ciphertext'] = $user_encryption_session_ciphertext;
-    $_SESSION['user_encryption_session_iv'] = $user_encryption_session_iv;
-
-    // Give the user "their" key as a cookie
     include 'config.php';
 
+    $user_id = intval($_SESSION['user_id'] ?? 0);
+
+    // 32 random bytes for the cookie key. Base64url so it survives cookies.
+    $key32 = random_bytes(32);
+    $cookie_value = rtrim(strtr(base64_encode($key32), '+/', '-_'), '=');
+
+    // Encrypt master under the cookie key, AAD-bound to this user.
+    $aad  = "itflow-session-master|user={$user_id}";
+    $blob = cryptoEncryptV2($site_encryption_master_key, $key32, $aad);
+    sodium_memzero($key32);
+
+    $_SESSION['user_encryption_session_ciphertext'] = base64_encode($blob);
+    $_SESSION['user_encryption_session_iv']         = 'gcm';  // sentinel; real IV is inside the blob
+    $_SESSION['user_encryption_session_kdf']        = 2;
+
     if ($config_https_only) {
-        setcookie("user_encryption_session_key", "$user_encryption_session_key", ['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
+        setcookie("user_encryption_session_key", $cookie_value, ['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
     } else {
-        setcookie("user_encryption_session_key", $user_encryption_session_key, 0, "/");
+        setcookie("user_encryption_session_key", $cookie_value, 0, "/");
         $_SESSION['alert_message'] = "Unencrypted connection flag set: Using non-secure cookies.";
     }
+}
+
+/*
+ * Unwrap the master key from the current session. Tries the new v2 GCM
+ * format first; falls back to the legacy AES-128-CBC format for sessions
+ * created before phase 18. Returns the raw master key (string), or null
+ * if the vault is not unlocked or the session material is corrupt.
+ */
+function sessionUnwrapMasterKey(): ?string
+{
+    $ct_b64 = $_SESSION['user_encryption_session_ciphertext'] ?? null;
+    $iv_or_sentinel = $_SESSION['user_encryption_session_iv'] ?? null;
+    $cookie = $_COOKIE['user_encryption_session_key'] ?? null;
+
+    if (empty($ct_b64) || empty($iv_or_sentinel) || empty($cookie)) {
+        return null;
+    }
+
+    // v2 GCM path: cookie is base64url(32 raw bytes), session iv is "gcm".
+    if ($iv_or_sentinel === 'gcm') {
+        $key32 = base64_decode(strtr($cookie, '-_', '+/'), true);
+        if ($key32 === false || strlen($key32) !== 32) return null;
+        $blob  = base64_decode($ct_b64, true);
+        if ($blob === false) return null;
+        $user_id = intval($_SESSION['user_id'] ?? 0);
+        $aad     = "itflow-session-master|user={$user_id}";
+        try {
+            $pt = cryptoDecryptV2($blob, $key32, $aad);
+        } catch (Throwable $e) {
+            sodium_memzero($key32);
+            return null;
+        }
+        sodium_memzero($key32);
+        return ($pt === '' ? null : $pt);
+    }
+
+    // Legacy AES-128-CBC fallback. After successful legacy unwrap, callers
+    // should call generateUserSessionKey($pt) to migrate.
+    $pt = openssl_decrypt($ct_b64, 'aes-128-cbc', $cookie, 0, $iv_or_sentinel);
+    if ($pt === false || $pt === '') {
+        return null;
+    }
+    return $pt;
 }
 
 // Decrypts an encrypted password (website/asset credentials), returns it as a string.
@@ -565,22 +609,8 @@ function decryptCredentialEntry($credential_password_ciphertext, $client_id = nu
         }
     }
 
-    // Get the user session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
-    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
-    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
-
-    if (!$user_encryption_session_ciphertext || !$user_encryption_session_iv || !$user_encryption_session_key) {
-        return false;
-    }
-
-    // Decrypt the session key to get the master key (still AES-128-CBC at session layer)
-    $site_encryption_master_key = openssl_decrypt(
-        $user_encryption_session_ciphertext, 'aes-128-cbc',
-        $user_encryption_session_key, 0, $user_encryption_session_iv
-    );
-
-    if ($site_encryption_master_key === false) {
+    $site_encryption_master_key = sessionUnwrapMasterKey();
+    if ($site_encryption_master_key === null) {
         return false;
     }
 
@@ -632,21 +662,8 @@ function encryptCredentialEntry($credential_password_cleartext, $client_id = nul
         // (e.g. vault locked). Better to write v2 than to lose the value.
     }
 
-    // Get the user session info.
-    $user_encryption_session_ciphertext = $_SESSION['user_encryption_session_ciphertext'] ?? null;
-    $user_encryption_session_iv         = $_SESSION['user_encryption_session_iv']         ?? null;
-    $user_encryption_session_key        = $_COOKIE['user_encryption_session_key']         ?? null;
-
-    if (!$user_encryption_session_ciphertext || !$user_encryption_session_iv || !$user_encryption_session_key) {
-        return false;
-    }
-
-    $site_encryption_master_key = openssl_decrypt(
-        $user_encryption_session_ciphertext, 'aes-128-cbc',
-        $user_encryption_session_key, 0, $user_encryption_session_iv
-    );
-
-    if ($site_encryption_master_key === false) {
+    $site_encryption_master_key = sessionUnwrapMasterKey();
+    if ($site_encryption_master_key === null) {
         return false;
     }
 
@@ -893,8 +910,19 @@ const CRYPTO_VERSION_V2        = "\x02";
 const CRYPTO_ALGO_AES256_GCM   = "\x01";
 const CREDENTIAL_V2_PREFIX     = 'v2:';
 
-function cryptoEncryptV2(#[\SensitiveParameter] string $plaintext, #[\SensitiveParameter] string $key32): string
-{
+/*
+ * AES-256-GCM encrypt with optional Additional Authenticated Data (AAD).
+ *
+ * AAD is NOT stored in the blob. Callers must reconstruct the same AAD at
+ * decrypt time (typically a canonical string that binds the ciphertext to
+ * a row identity, e.g. "itflow-vault-wrap-v2|user=42|purpose=master").
+ * If the AAD does not match exactly, GCM tag verification fails.
+ */
+function cryptoEncryptV2(
+    #[\SensitiveParameter] string $plaintext,
+    #[\SensitiveParameter] string $key32,
+    string $aad = ''
+): string {
     if (strlen($key32) !== 32) {
         throw new RuntimeException('cryptoEncryptV2: key must be exactly 32 bytes');
     }
@@ -902,7 +930,7 @@ function cryptoEncryptV2(#[\SensitiveParameter] string $plaintext, #[\SensitiveP
     $tag = '';
     $ct  = openssl_encrypt(
         $plaintext, 'aes-256-gcm', $key32,
-        OPENSSL_RAW_DATA, $iv, $tag, '', 16
+        OPENSSL_RAW_DATA, $iv, $tag, $aad, 16
     );
     if ($ct === false) {
         throw new RuntimeException('cryptoEncryptV2: openssl_encrypt failed');
@@ -910,8 +938,11 @@ function cryptoEncryptV2(#[\SensitiveParameter] string $plaintext, #[\SensitiveP
     return CRYPTO_VERSION_V2 . CRYPTO_ALGO_AES256_GCM . $iv . $ct . $tag;
 }
 
-function cryptoDecryptV2(string $blob, #[\SensitiveParameter] string $key32): string
-{
+function cryptoDecryptV2(
+    string $blob,
+    #[\SensitiveParameter] string $key32,
+    string $aad = ''
+): string {
     if (strlen($key32) !== 32) {
         throw new RuntimeException('cryptoDecryptV2: key must be exactly 32 bytes');
     }
@@ -926,12 +957,25 @@ function cryptoDecryptV2(string $blob, #[\SensitiveParameter] string $key32): st
     $ct  = substr($blob, 14, -16);
     $pt  = openssl_decrypt(
         $ct, 'aes-256-gcm', $key32,
-        OPENSSL_RAW_DATA, $iv, $tag
+        OPENSSL_RAW_DATA, $iv, $tag, $aad
     );
     if ($pt === false) {
         throw new RuntimeException('cryptoDecryptV2: decryption or authentication failed');
     }
     return $pt;
+}
+
+/*
+ * Canonical AAD strings for vault-wrap blobs. Bumping the version suffix
+ * forces a re-wrap migration (lazy: on next successful unlock).
+ */
+const VAULT_WRAP_AAD_VERSION = 2;
+
+function vaultWrapAad(int $user_id, string $purpose): string
+{
+    return 'itflow-vault-wrap-v' . VAULT_WRAP_AAD_VERSION
+        . '|user=' . $user_id
+        . '|purpose=' . $purpose;
 }
 
 function deriveKekArgon2id(#[\SensitiveParameter] string $secret, string $salt): string
@@ -1186,13 +1230,30 @@ if (!function_exists('userGenerateKeypairForPassword')) {
      */
     function pushUserPrivkeyToSession(#[\SensitiveParameter] string $privkey_raw): void
     {
-        if (empty($_COOKIE['user_encryption_session_key'])) {
+        $cookie = $_COOKIE['user_encryption_session_key'] ?? '';
+        if ($cookie === '') {
             // generateUserSessionKey() must have been called already.
             return;
         }
-        $session_key = $_COOKIE['user_encryption_session_key'];
+        // Phase 18: GCM with AAD bound to user_id, sharing the v2 cookie key.
+        $key32 = base64_decode(strtr($cookie, '-_', '+/'), true);
+        if ($key32 !== false && strlen($key32) === 32) {
+            $user_id = intval($_SESSION['user_id'] ?? 0);
+            $aad = "itflow-session-privkey|user={$user_id}";
+            try {
+                $blob = cryptoEncryptV2($privkey_raw, $key32, $aad);
+                $_SESSION['user_privkey_session_ciphertext'] = base64_encode($blob);
+                $_SESSION['user_privkey_session_iv']         = 'gcm';
+            } catch (Throwable $e) {
+                error_log('pushUserPrivkeyToSession: GCM wrap failed: ' . $e->getMessage());
+            } finally {
+                sodium_memzero($key32);
+            }
+            return;
+        }
+        // Legacy session that pre-dates phase 18: cookie is 16-char string.
         $iv = randomString();
-        $ct = openssl_encrypt($privkey_raw, 'aes-128-cbc', $session_key, 0, $iv);
+        $ct = openssl_encrypt($privkey_raw, 'aes-128-cbc', $cookie, 0, $iv);
         if ($ct === false) return;
         $_SESSION['user_privkey_session_ciphertext'] = $ct;
         $_SESSION['user_privkey_session_iv']         = $iv;
@@ -1203,18 +1264,34 @@ if (!function_exists('userGenerateKeypairForPassword')) {
      */
     function userPrivkeyFromSession(): ?string
     {
-        if (empty($_SESSION['user_privkey_session_ciphertext'])
-            || empty($_SESSION['user_privkey_session_iv'])
-            || empty($_COOKIE['user_encryption_session_key'])) {
+        $ct_b64 = $_SESSION['user_privkey_session_ciphertext'] ?? '';
+        $iv_or_sentinel = $_SESSION['user_privkey_session_iv'] ?? '';
+        $cookie = $_COOKIE['user_encryption_session_key'] ?? '';
+        if ($ct_b64 === '' || $iv_or_sentinel === '' || $cookie === '') {
             return null;
         }
-        $pt = openssl_decrypt(
-            $_SESSION['user_privkey_session_ciphertext'],
-            'aes-128-cbc',
-            $_COOKIE['user_encryption_session_key'],
-            0,
-            $_SESSION['user_privkey_session_iv']
-        );
+
+        if ($iv_or_sentinel === 'gcm') {
+            $key32 = base64_decode(strtr($cookie, '-_', '+/'), true);
+            if ($key32 === false || strlen($key32) !== 32) return null;
+            $blob  = base64_decode($ct_b64, true);
+            if ($blob === false) {
+                sodium_memzero($key32);
+                return null;
+            }
+            $user_id = intval($_SESSION['user_id'] ?? 0);
+            $aad = "itflow-session-privkey|user={$user_id}";
+            try {
+                $pt = cryptoDecryptV2($blob, $key32, $aad);
+            } catch (Throwable $e) {
+                sodium_memzero($key32);
+                return null;
+            }
+            sodium_memzero($key32);
+            return ($pt === '' ? null : $pt);
+        }
+
+        $pt = openssl_decrypt($ct_b64, 'aes-128-cbc', $cookie, 0, $iv_or_sentinel);
         return ($pt === false || $pt === '') ? null : $pt;
     }
 

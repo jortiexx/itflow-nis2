@@ -74,3 +74,54 @@ if (isset($_POST['delete_vault_method'])) {
     }
     redirect();
 }
+
+// Phase 18: kill-switch — temporarily disable a method without losing
+// the audit row. Re-enable is a separate POST.
+if (isset($_POST['disable_vault_method'])) {
+
+    validateCSRFToken($_POST['csrf_token'] ?? '');
+
+    $method_id = intval($_POST['vault_method_id'] ?? 0);
+    if ($method_id <= 0) {
+        flash_alert('Invalid method id.', 'danger');
+        redirect();
+    }
+
+    $ok = vaultDisableMethod($method_id, $session_user_id, $session_user_id, $mysqli);
+    if ($ok) {
+        logAction('Vault', 'Method disabled', "$session_name disabled a vault unlock method", 0, $session_user_id);
+        securityAudit('vault.method.disabled', [
+            'user_id'   => $session_user_id,
+            'target_id' => $method_id,
+            'metadata'  => ['actor' => 'self'],
+        ]);
+        flash_alert('Vault unlock method disabled.');
+    } else {
+        flash_alert('Method not found or already disabled.', 'danger');
+    }
+    redirect();
+}
+
+if (isset($_POST['enable_vault_method'])) {
+
+    validateCSRFToken($_POST['csrf_token'] ?? '');
+
+    $method_id = intval($_POST['vault_method_id'] ?? 0);
+    if ($method_id <= 0) {
+        flash_alert('Invalid method id.', 'danger');
+        redirect();
+    }
+
+    $ok = vaultEnableMethod($method_id, $session_user_id, $mysqli);
+    if ($ok) {
+        logAction('Vault', 'Method re-enabled', "$session_name re-enabled a vault unlock method", 0, $session_user_id);
+        securityAudit('vault.method.enabled', [
+            'user_id'   => $session_user_id,
+            'target_id' => $method_id,
+        ]);
+        flash_alert('Vault unlock method re-enabled.');
+    } else {
+        flash_alert('Method not found.', 'danger');
+    }
+    redirect();
+}

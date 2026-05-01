@@ -189,16 +189,35 @@ try {
             <p class="text-muted small">No unlock methods configured.</p>
         <?php else: ?>
             <table class="table table-sm">
-                <thead><tr><th>Type</th><th>Label</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+                <thead><tr><th>Type</th><th>Label</th><th>Authenticator</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($vault_methods as $m): ?>
                     <tr>
                         <td><?= htmlentities($m['method_type']) ?></td>
                         <td><?= nullable_htmlentities($m['label']) ?></td>
+                        <td>
+                            <?php if ($m['method_type'] === 'webauthn_prf'): ?>
+                                <?php if (!empty($m['backup_eligible'])): ?>
+                                    <span class="badge badge-warning" title="Multi-device / synced passkey">synced</span>
+                                <?php else: ?>
+                                    <span class="badge badge-info" title="Hardware-bound credential">hw</span>
+                                <?php endif; ?>
+                                <?php if (!empty($m['transports'])): ?>
+                                    <small class="text-secondary"><?= htmlentities($m['transports']) ?></small>
+                                <?php endif; ?>
+                                <?php if (!empty($m['aaguid'])): ?>
+                                    <br><small class="text-secondary" style="font-family:monospace; font-size: 10px;"><?= htmlentities(substr($m['aaguid'], 0, 8)) ?>…</small>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <span class="text-secondary">—</span>
+                            <?php endif; ?>
+                        </td>
                         <td><?= nullable_htmlentities($m['created_at']) ?></td>
                         <td><?= nullable_htmlentities($m['last_used_at'] ?? '-') ?></td>
                         <td>
-                            <?php if (!empty($m['locked_until']) && strtotime($m['locked_until']) > time()): ?>
+                            <?php if (!empty($m['disabled_at'])): ?>
+                                <span class="badge badge-dark">Disabled <?= htmlentities($m['disabled_at']) ?></span>
+                            <?php elseif (!empty($m['locked_until']) && strtotime($m['locked_until']) > time()): ?>
                                 <span class="badge badge-warning">Locked until <?= htmlentities($m['locked_until']) ?></span>
                             <?php elseif (intval($m['failed_attempts']) > 0): ?>
                                 <span class="badge badge-secondary"><?= intval($m['failed_attempts']) ?> failed</span>
@@ -206,11 +225,29 @@ try {
                                 <span class="badge badge-success">OK</span>
                             <?php endif; ?>
                         </td>
-                        <td>
-                            <form action="post.php" method="post" class="d-inline" onsubmit="return confirm('Remove this unlock method?');">
+                        <td class="text-nowrap">
+                            <?php if (empty($m['disabled_at'])): ?>
+                                <form action="post.php" method="post" class="d-inline" onsubmit="return confirm('Disable this unlock method? You can re-enable it later.');">
+                                    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+                                    <input type="hidden" name="vault_method_id" value="<?= intval($m['method_id']) ?>">
+                                    <button type="submit" name="disable_vault_method" class="btn btn-sm btn-outline-warning" title="Disable">
+                                        <i class="fa fa-pause"></i>
+                                    </button>
+                                </form>
+                            <?php else: ?>
+                                <form action="post.php" method="post" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+                                    <input type="hidden" name="vault_method_id" value="<?= intval($m['method_id']) ?>">
+                                    <button type="submit" name="enable_vault_method" class="btn btn-sm btn-outline-success" title="Re-enable">
+                                        <i class="fa fa-play"></i>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                            <form action="post.php" method="post" class="d-inline"
+                                  onsubmit="return confirm('Remove this unlock method?\n\nIf you are removing it because you suspect the device or PIN was compromised, also notify your administrator — revoking does NOT rotate the master key, so any secrets that may have been read remain decryptable until the master is rotated.');">
                                 <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
                                 <input type="hidden" name="vault_method_id" value="<?= intval($m['method_id']) ?>">
-                                <button type="submit" name="delete_vault_method" class="btn btn-sm btn-outline-danger">
+                                <button type="submit" name="delete_vault_method" class="btn btn-sm btn-outline-danger" title="Remove">
                                     <i class="fa fa-trash"></i>
                                 </button>
                             </form>

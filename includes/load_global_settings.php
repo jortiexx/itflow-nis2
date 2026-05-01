@@ -127,6 +127,11 @@ $config_ratelimit_api_window     = intval($row['config_ratelimit_api_window']   
 $config_ratelimit_pwreset_max    = intval($row['config_ratelimit_pwreset_max']    ?? 5);
 $config_ratelimit_pwreset_window = intval($row['config_ratelimit_pwreset_window'] ?? 3600);
 
+// Phase 18: vault idle TTL, lockout cap, hardware-bound attestation policy.
+$config_vault_idle_ttl_seconds                  = intval($row['config_vault_idle_ttl_seconds']                  ?? 1800);
+$config_vault_lockout_max_seconds               = intval($row['config_vault_lockout_max_seconds']               ?? 3600);
+$config_require_hardware_bound_authenticators   = intval($row['config_require_hardware_bound_authenticators']   ?? 0);
+
 // Locale
 $config_currency_format = "US_en";
 $config_timezone = $row['config_timezone'];

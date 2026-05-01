@@ -4683,6 +4683,33 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.12'");
     }
 
+    // 2.4.4.12 -> 2.4.4.13: phase 18 — vault hardening:
+    //  * KDF/AAD versioning on wrapped_master_key (kdf_version)
+    //  * Captured FIDO2 metadata for policy + troubleshooting
+    //    (cose_alg, aaguid, backup_eligible, backup_state, transports)
+    //  * Per-method kill-switch (disabled_at, disabled_by_user_id)
+    //  * Per-account vault lockout with exponential backoff
+    //  * Vault idle TTL + hardware-bound attestation policy
+    if ($current_db_version == '2.4.4.12') {
+        mysqli_query($mysqli, "ALTER TABLE `user_vault_unlock_methods`
+            ADD COLUMN `kdf_version`        TINYINT NOT NULL DEFAULT 1,
+            ADD COLUMN `cose_alg`           INT NULL DEFAULT NULL,
+            ADD COLUMN `aaguid`             VARCHAR(36) NULL DEFAULT NULL,
+            ADD COLUMN `backup_eligible`    TINYINT(1) NULL DEFAULT NULL,
+            ADD COLUMN `backup_state`       TINYINT(1) NULL DEFAULT NULL,
+            ADD COLUMN `transports`         VARCHAR(64) NULL DEFAULT NULL,
+            ADD COLUMN `disabled_at`        DATETIME NULL DEFAULT NULL,
+            ADD COLUMN `disabled_by_user_id` INT NULL DEFAULT NULL");
+        mysqli_query($mysqli, "ALTER TABLE `users`
+            ADD COLUMN `vault_consecutive_failures` INT NOT NULL DEFAULT 0,
+            ADD COLUMN `vault_locked_until`         DATETIME NULL DEFAULT NULL");
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_vault_idle_ttl_seconds`            INT NOT NULL DEFAULT 1800,
+            ADD COLUMN `config_require_hardware_bound_authenticators` TINYINT(1) NOT NULL DEFAULT 0,
+            ADD COLUMN `config_vault_lockout_max_seconds`         INT NOT NULL DEFAULT 3600");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.13'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

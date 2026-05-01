@@ -476,6 +476,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_
 
                         if (!empty($site_encryption_master_key)) {
                             generateUserSessionKey($site_encryption_master_key);
+                            // Phase 18: a fresh password login satisfies idle-TTL
+                            // and step-up freshness for the next 30 / 5 minutes.
+                            $_SESSION['vault_unlocked']    = true;
+                            $_SESSION['vault_unlocked_at'] = time();
+                            $_SESSION['vault_step_up_at']  = time();
                         }
                         if (!empty($site_user_privkey)) {
                             // Phase 10: per-user privkey lives alongside the master key

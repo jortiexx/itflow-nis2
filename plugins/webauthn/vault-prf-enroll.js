@@ -50,13 +50,23 @@
                     throw new Error('Your authenticator does not support the WebAuthn PRF extension. Pick a security key that supports it (YubiKey 5 firmware 5.2.3+, Windows Hello, Touch ID, recent platform passkeys).');
                 }
 
+                // Phase 18: capture transports for FIDO2 metadata (not all
+                // browsers expose getTransports() — fall back to empty list).
+                var transports = [];
+                try {
+                    if (typeof cred.response.getTransports === 'function') {
+                        transports = cred.response.getTransports() || [];
+                    }
+                } catch (e) { transports = []; }
+
                 var payload = {
                     id: cred.id,
                     rawId: bytesToB64u(cred.rawId),
                     type: cred.type,
                     response: {
                         clientDataJSON:    bytesToB64u(cred.response.clientDataJSON),
-                        attestationObject: bytesToB64u(cred.response.attestationObject)
+                        attestationObject: bytesToB64u(cred.response.attestationObject),
+                        transports:        transports
                     }
                 };
 

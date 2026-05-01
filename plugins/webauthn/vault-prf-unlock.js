@@ -61,6 +61,10 @@
             var fd = new FormData();
             fd.append('credential', JSON.stringify(payload));
             fd.append('prf_output', bytesToB64u(prfRes.results.first));
+            // Phase 18: pass step-up return_to through if the page set it.
+            var btnEl = document.getElementById('vault_prf_unlock_btn');
+            var returnTo = btnEl ? (btnEl.dataset.returnTo || '') : '';
+            if (returnTo) fd.append('step_up_return_to', returnTo);
 
             var verify = await fetch('/agent/vault_unlock_prf_verify.php', {
                 method: 'POST', body: fd, credentials: 'same-origin'

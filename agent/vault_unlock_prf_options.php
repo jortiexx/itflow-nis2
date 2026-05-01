@@ -36,6 +36,7 @@ $rs = mysqli_query($mysqli,
     "SELECT credential_id, prf_salt
      FROM user_vault_unlock_methods
      WHERE user_id = $user_id AND method_type = 'webauthn_prf'
+       AND disabled_at IS NULL
        AND (locked_until IS NULL OR locked_until <= NOW())");
 $creds = [];
 $prf_salt_b64 = null;
@@ -64,7 +65,8 @@ $salts_by_cred      = []; // server-side cache for verify step
 $rs = mysqli_query($mysqli,
     "SELECT credential_id, prf_salt
      FROM user_vault_unlock_methods
-     WHERE user_id = $user_id AND method_type = 'webauthn_prf'");
+     WHERE user_id = $user_id AND method_type = 'webauthn_prf'
+       AND disabled_at IS NULL");
 if ($rs) {
     while ($row = mysqli_fetch_assoc($rs)) {
         $eval_by_credential[$row['credential_id']] = ['first' => $row['prf_salt']];

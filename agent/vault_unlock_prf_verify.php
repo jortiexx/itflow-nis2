@@ -75,10 +75,9 @@ if (!empty($method['locked_until']) && strtotime($method['locked_until']) > time
     exit(json_encode(['error' => 'this hardware unlock method is temporarily locked due to repeated failures']));
 }
 
-// Read the public-key PEM and COSE alg to verify the assertion.
-$cose_alg = COSE_ALG_ES256;
+// Read the public-key PEM, sign_count and stored COSE alg.
 $row = mysqli_fetch_assoc(mysqli_query($mysqli,
-    "SELECT public_key, sign_count FROM user_vault_unlock_methods
+    "SELECT public_key, sign_count, cose_alg FROM user_vault_unlock_methods
      WHERE method_id = " . intval($method['method_id']) . " LIMIT 1"));
 if (!$row) {
     http_response_code(400);
@@ -86,11 +85,8 @@ if (!$row) {
 }
 $public_key_pem = $row['public_key'];
 $sign_count     = intval($row['sign_count']);
+$stored_alg     = intval($row['cose_alg'] ?? 0);
 
-// We didn't store cose_alg in user_vault_unlock_methods for PRF (yet).
-// Detect from PEM header heuristically; ES256 PEMs are ~178 chars vs RS256 ~451+.
-// More robust: try ES256 first, fall back to RS256 — openssl_verify accepts both
-// against the same PEM only if it actually matches the algorithm.
 $rp_id = preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST']);
 $origin = (
     (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
@@ -99,7 +95,12 @@ $origin = (
 
 $assertion_ok = false;
 $new_count    = $sign_count;
-foreach ([COSE_ALG_ES256, COSE_ALG_RS256] as $try_alg) {
+
+// Phase 18: prefer stored cose_alg. Pre-phase-18 rows may have NULL
+// cose_alg; fall through to the legacy trial loop in that case so existing
+// enrolments keep working until they're re-registered.
+$try_algs = $stored_alg > 0 ? [$stored_alg] : [COSE_ALG_ES256, COSE_ALG_RS256];
+foreach ($try_algs as $try_alg) {
     try {
         $new_count = webauthnVerifyAssertion(
             $payload, $public_key_pem, $sign_count, $try_alg,
@@ -107,6 +108,12 @@ foreach ([COSE_ALG_ES256, COSE_ALG_RS256] as $try_alg) {
         );
         $cose_alg     = $try_alg;
         $assertion_ok = true;
+        // Backfill cose_alg for legacy rows so the next unlock skips the loop.
+        if ($stored_alg <= 0) {
+            mysqli_query($mysqli, "UPDATE user_vault_unlock_methods
+                SET cose_alg = " . intval($try_alg) . "
+                WHERE method_id = " . intval($method['method_id']));
+        }
         break;
     } catch (WebAuthnException $e) {
         // try the other algorithm
@@ -152,8 +159,10 @@ generateUserSessionKey($unlock['master']);
 if (!empty($unlock['privkey'])) {
     pushUserPrivkeyToSession($unlock['privkey']);
 }
-$_SESSION['vault_unlocked'] = true;
-$_SESSION['csrf_token']     = randomString(32);
+$_SESSION['vault_unlocked']    = true;
+$_SESSION['vault_unlocked_at'] = time();
+$_SESSION['vault_step_up_at']  = time();  // phase 18: PRF re-prompt is freshness proof
+$_SESSION['csrf_token']        = randomString(32);
 
 $row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT user_name FROM users WHERE user_id = $user_id LIMIT 1"));
 $user_name = $row ? $row['user_name'] : "user_$user_id";
@@ -164,4 +173,11 @@ securityAudit('vault.unlock.success', [
 ]);
 
 $start = $config_start_page ?? 'clients.php';
-echo json_encode(['ok' => true, 'redirect' => "/agent/$start"]);
+
+// Phase 18: honour step-up return_to if same-origin /agent/.
+$return_raw = (string)($_POST['step_up_return_to'] ?? '');
+$redirect = "/agent/$start";
+if ($return_raw !== '' && preg_match('#^/agent/[a-zA-Z0-9_/\-\.\?\=&%]+$#', $return_raw)) {
+    $redirect = $return_raw;
+}
+echo json_encode(['ok' => true, 'redirect' => $redirect]);
