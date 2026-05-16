@@ -162,12 +162,38 @@ if (!function_exists('sweepLegacyFilesForClient')) {
             $disk_path = __DIR__ . "/../uploads/clients/$client_id/" . basename($ref);
 
             if (!is_file($disk_path) || !is_readable($disk_path)) {
-                // File missing on disk — flag and skip.
+                // File missing on disk. Count how many times we've already
+                // flagged this row — after the third miss we soft-archive it
+                // so it stops re-entering the sweep queue (otherwise a single
+                // ghost row keeps a client permanently "incomplete" and the
+                // first-login migration UI loops forever).
+                $miss_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+                    "SELECT COUNT(*) AS n FROM security_audit_log
+                     WHERE event_type = 'file.migrate.missing_on_disk'
+                       AND target_type = 'file'
+                       AND target_id   = $file_id"));
+                $prior_misses = $miss_row ? intval($miss_row['n']) : 0;
+
                 securityAudit('file.migrate.missing_on_disk', [
                     'target_type' => 'file',
                     'target_id'   => $file_id,
                     'metadata'    => ['client_id' => $client_id, 'reference' => $ref],
                 ]);
+
+                if ($prior_misses + 1 >= 3) {
+                    mysqli_query($mysqli,
+                        "UPDATE files SET file_archived_at = NOW()
+                         WHERE file_id = $file_id AND file_archived_at IS NULL");
+                    securityAudit('file.migrate.ghost_row_archived', [
+                        'target_type' => 'file',
+                        'target_id'   => $file_id,
+                        'metadata'    => [
+                            'client_id'    => $client_id,
+                            'reference'    => $ref,
+                            'misses_total' => $prior_misses + 1,
+                        ],
+                    ]);
+                }
                 $failed++;
                 continue;
             }

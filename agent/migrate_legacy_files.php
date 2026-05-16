@@ -163,13 +163,16 @@ $company_logo = $brand_row['company_logo'] ?? '';
                 return;
             }
 
-            // Stuck-detection: if 5 consecutive batches make no progress
-            // and no new failures, stop polling and tell the user.
-            if ((data.encrypted_this_batch || 0) === 0 && (data.failed_this_batch || 0) === 0) {
+            // Stuck-detection: if 5 consecutive batches encrypt nothing, stop
+            // polling — failures alone don't drain the remaining count, so a
+            // ghost row that keeps failing would otherwise loop forever.
+            if ((data.encrypted_this_batch || 0) === 0) {
                 consecutiveNoProgress++;
                 if (consecutiveNoProgress >= 5) {
                     errorBox.classList.remove('d-none');
-                    errorMsg.textContent = 'No progress for 5 batches. Try refreshing this page; if it persists, run scripts/encrypt_legacy_files.php from the CLI.';
+                    errorMsg.textContent = 'No progress for 5 batches (' +
+                        (data.failed_this_batch ? 'only failures' : 'idle') +
+                        '). Refresh this page; if it persists, run scripts/encrypt_legacy_files.php from the CLI or check security_audit_log for file.migrate.missing_on_disk entries.';
                     return;
                 }
             } else {
