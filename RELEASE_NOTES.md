@@ -2,6 +2,55 @@
 
 This file tracks changes specific to this fork. The upstream `CHANGELOG.md` continues to track upstream releases as merged in.
 
+---
+
+> ## ⚠ Known issue: legacy file sweeper loop (≤ v0.19.2)
+>
+> Versions `v0.18.0` through `v0.19.2` contain a bug in the first-login legacy file sweeper (phase 15): a `files` row whose on-disk content is missing keeps re-entering the sweep queue, causing the migration UI to loop forever at "Encrypting legacy files…". Fixed in [`v0.19.3`](#v0193-orphan-row-preflight) by an idempotent preflight in `database_updates.php` plus a runtime auto-archive in the sweeper itself.
+>
+> **What to do:**
+> - **Before upgrading a populated install:** always `git fetch && git checkout v0.19.3-orphan-preflight` (or follow `master`) first. Do NOT click *Update Database* on `v0.18.x` or `v0.19.0–v0.19.2`.
+> - **If you already hit the loop on an older version:** close the migration tab, then run this SQL to find ghost rows:
+>   ```sql
+>   SELECT file_id, file_client_id, file_reference_name
+>     FROM files
+>    WHERE file_encrypted = 0 AND file_archived_at IS NULL;
+>   ```
+>   For each row whose `uploads/clients/<file_client_id>/<basename(file_reference_name)>` doesn't exist on disk, run `UPDATE files SET file_archived_at = NOW() WHERE file_id = <id>;`, then refresh the migration tab.
+
+---
+
+## v0.19.3-orphan-preflight — Phase 15 hotfix: unconditional orphan preflight
+
+Defensive forward-fix to make the *whole* migration pipeline ghost-row-safe regardless of source DB version. `admin/database_updates.php` now runs an unconditional preflight before the version-stepped loop: any `files` row with `file_encrypted = 0 AND file_archived_at IS NULL` whose on-disk content is missing is soft-archived (`file_archived_at = NOW()`). Idempotent — no-op when nothing is missing, gated on schema readiness so pre-phase-15 installs don't error.
+
+Combined defense-in-depth:
+- **Preflight (v0.19.3):** schema-migration entry point, runs every Update Database click, source-version-agnostic
+- **Schema step 2.4.4.13 → 2.4.4.14 (v0.19.2):** one-shot during specific version bump (still in place; now usually a no-op because preflight already cleaned)
+- **Sweeper auto-archive (v0.19.1):** runtime fallback after 3 missed-on-disk audit entries — handles ghost rows that appear AFTER install
+- **UI stuck-detection (v0.19.1):** stops the polling loop after 5 batches with zero encrypted-progress (failures inclusive), with a diagnostic error message
+
+No schema change. `LATEST_DATABASE_VERSION` stays at `2.4.4.14`.
+
+Also: `README.md` and the release pages for `v0.18.0`–`v0.19.2` are flagged with a known-issue banner pointing here.
+
+---
+
+## v0.19.2-orphan-sweep-migration — Phase 15 hotfix: schema-migration orphan sweep
+
+DB version step 2.4.4.13 → 2.4.4.14 that proactively soft-archives `files` rows whose on-disk content is missing during the schema migration itself, before the first-login sweeper ever runs. Now superseded by the v0.19.3 preflight for source-version-agnostic protection, but retained for installs that upgrade through this specific step.
+
+---
+
+## v0.19.1-ghost-row-handling — Phase 15 hotfix: runtime sweeper hardening
+
+Two fixes to `includes/legacy_file_sweeper.php` and `agent/migrate_legacy_files.php`:
+
+1. **Auto-archive after 3 missed-on-disk hits.** A `files` row whose on-disk content is missing kept re-entering the sweep queue (the original code logged `file.migrate.missing_on_disk` to the audit log and incremented `$failed`, but never marked the row as handled). After the third miss the row is now soft-archived and a `file.migrate.ghost_row_archived` audit entry is written. Three-miss threshold avoids archiving rows during transient FS issues (mount drop, NFS hiccup).
+2. **UI stuck-detection counts failures.** The original logic only treated `encrypted=0 AND failed=0` batches as no-progress, so a ghost row producing pure failures would never trip the 5-batch break. Now `encrypted=0` alone suffices.
+
+---
+
 ## v0.18.0-nis2-vault-hardening — Phase 18: vault hardening
 
 Closes the open technical gaps from a security review of phase 13–17: AAD on

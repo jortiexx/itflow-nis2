@@ -27,6 +27,43 @@ $current_db_version = CURRENT_DATABASE_VERSION;
 $migration_iterations = 0;
 $migration_max_iterations = 100; // safety guard against bad migration data
 
+// Phase 15 hotfix preflight (v0.19.3+): proactively soft-archive file rows
+// whose on-disk content is missing, BEFORE any version-stepped migration runs.
+// Idempotent — runs on every Update Database click, no-op when nothing's
+// missing. Gated on schema readiness so pre-phase-15 installs (no
+// file_encrypted column yet) don't error out. Runs at the top of the
+// migration entry-point so subsequent steps and the post-migration sweeper
+// see a clean queue regardless of source DB version.
+if (true) {
+    $cols_ready = mysqli_query($mysqli,
+        "SELECT COLUMN_NAME FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name   = 'files'
+           AND column_name IN ('file_encrypted','file_archived_at')");
+    if ($cols_ready && mysqli_num_rows($cols_ready) === 2) {
+        $preflight_uploads_root = __DIR__ . '/../uploads/clients';
+        $preflight_archived     = 0;
+        $orphan_res = mysqli_query($mysqli,
+            "SELECT file_id, file_client_id, file_reference_name
+             FROM files
+             WHERE file_encrypted = 0 AND file_archived_at IS NULL");
+        while ($orphan_res && ($row = mysqli_fetch_assoc($orphan_res))) {
+            $cid = intval($row['file_client_id']);
+            $ref = basename((string)$row['file_reference_name']);
+            $path = $preflight_uploads_root . '/' . $cid . '/' . $ref;
+            if (!is_file($path) || !is_readable($path)) {
+                $fid = intval($row['file_id']);
+                mysqli_query($mysqli,
+                    "UPDATE files SET file_archived_at = NOW() WHERE file_id = $fid");
+                $preflight_archived++;
+            }
+        }
+        if ($preflight_archived > 0) {
+            error_log("itflow database_updates.php preflight: archived $preflight_archived orphan file row(s)");
+        }
+    }
+}
+
 while ($migration_iterations < $migration_max_iterations
        && version_compare(LATEST_DATABASE_VERSION, $current_db_version, '>')) {
     $migration_iterations++;

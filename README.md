@@ -19,6 +19,9 @@
 > ```
 > Then `Admin → Update → Update Database` to run pending schema migrations.
 >
+> **⚠ Known issue, legacy file sweeper (fixed in `v0.19.3`+):**
+> Versions `v0.18.x` through `v0.19.2` contain a bug in the first-login legacy file sweeper that can loop forever on `files` rows whose on-disk content is missing (so-called "ghost rows"). **Always check out at least `v0.19.3` (or follow `master`) before clicking Update Database on a populated install.** If you've already hit the loop on an older version, see [`docs/vault-runbook.md`](docs/vault-runbook.md) and [`RELEASE_NOTES.md`](RELEASE_NOTES.md#v0193-orphan-row-preflight) for the manual SQL recovery and the post-hoc cleanup migration.
+>
 > ---
 
 <!-- PROJECT SHIELDS -->
