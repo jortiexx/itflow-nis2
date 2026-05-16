@@ -20,6 +20,16 @@ This file tracks changes specific to this fork. The upstream `CHANGELOG.md` cont
 
 ---
 
+## v0.20.1-asset-autocomplete — Feature: asset make/model/OS autocomplete
+
+Cherry-picked from `jortiexx/itflow` (branch `autocomplete`, commit `cd5f8075`). jQuery UI autocomplete on the three free-text fields in the asset add/edit/copy modals, sourcing distinct values from existing non-archived asset rows so an operator typing the second "HP EliteBook 840 G8" gets a one-tap completion instead of retyping.
+
+New endpoint: `agent/includes/asset_autocomplete.php`. Column name is validated against a hard-coded allowlist (`asset_make`, `asset_model`, `asset_os`) before interpolation, so the apparent string-concat is not a SQL injection vector. JSON output uses `JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT` so a free-text value containing HTML is neutralised before reaching the page.
+
+Auto-merged cleanly with the phase-14 PHP-mediated photo endpoint changes that also live in those modal files. No schema change, no settings, no migration.
+
+---
+
 ## v0.20.0-nis2-sso-groups — Phase 19: group-gated JIT provisioning
 
 JIT-provisioning for Entra SSO can now be gated on Entra group membership: a sign-in identity must be a member (direct or transitive) of a configured Entra group before a local agent account is auto-created. Pre-existing local accounts (matched on `oid` or email) sign in regardless — group governance for existing accounts is a separate concern handled by admin user management.
