@@ -41,6 +41,12 @@ $asset_contact_id = intval($row['asset_contact_id']);
 $asset_network_id = intval($row['interface_network_id']);
 $device_icon = getAssetIcon($asset_type);
 
+// Typeahead suggestions for make, model and OS
+require_once '../../includes/asset_autocomplete.php';
+$json_make  = buildAssetAutocompleteJson($mysqli, 'asset_make');
+$json_model = buildAssetAutocompleteJson($mysqli, 'asset_model');
+$json_os    = buildAssetAutocompleteJson($mysqli, 'asset_os');
+
 // Generate the HTML form content using output buffering.
 ob_start();
 ?>
@@ -116,7 +122,7 @@ ob_start();
                             <div class="input-group-prepend">
                                 <span class="input-group-text"><i class="fa fa-fw fa-building"></i></span>
                             </div>
-                            <input type="text" class="form-control" name="make" placeholder="Manufacturer" value="<?php echo $asset_make; ?>">
+                            <input type="text" class="form-control" name="make" id="make" placeholder="Manufacturer" value="<?php echo $asset_make; ?>">
                         </div>
                     </div>
 
@@ -126,7 +132,7 @@ ob_start();
                             <div class="input-group-prepend">
                                 <span class="input-group-text"><i class="fa fa-fw fa-cube"></i></span>
                             </div>
-                            <input type="text" class="form-control" name="model" placeholder="Model Number" value="<?php echo $asset_model; ?>">
+                            <input type="text" class="form-control" name="model" id="model" placeholder="Model Number" value="<?php echo $asset_model; ?>">
                         </div>
                     </div>
 
@@ -148,7 +154,7 @@ ob_start();
                             <div class="input-group-prepend">
                                 <span class="input-group-text"><i class="fas fa-fw fa-laptop-code"></i></span>
                             </div>
-                            <input type="text" class="form-control" name="os" placeholder="ex Windows 10 Pro" value="<?php echo $asset_os; ?>">
+                            <input type="text" class="form-control" name="os" id="os" placeholder="e.g. Windows 11 Pro, Ubuntu 24.04" value="<?php echo $asset_os; ?>">
                         </div>
                     </div>
                 <?php } ?>
@@ -454,6 +460,31 @@ ob_start();
         <button type="button" class="btn btn-light" data-dismiss="modal"><i class="fa fa-times mr-2"></i>Cancel</button>
     </div>
 </form>
+
+<!-- JSON Autocomplete / type ahead -->
+<link rel="stylesheet" href="/plugins/jquery-ui/jquery-ui.min.css">
+<script src="/plugins/jquery-ui/jquery-ui.min.js"></script>
+<script>
+    $(function() {
+        var makes  = <?= $json_make ?>;
+        var models = <?= $json_model ?>;
+        var operatingSystems = <?= $json_os ?>;
+
+        function bindAutocomplete(selector, source) {
+            $(selector).autocomplete({
+                source: source,
+                select: function(event, ui) {
+                    $(selector).val(ui.item.label);
+                    return false;
+                }
+            });
+        }
+
+        bindAutocomplete("#make",  makes);
+        bindAutocomplete("#model", models);
+        bindAutocomplete("#os",    operatingSystems);
+    });
+</script>
 
 <?php
 require_once '../../../includes/modal_footer.php';

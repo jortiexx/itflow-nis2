@@ -15,17 +15,11 @@ if ($client_id) {
     $sql_client_select = mysqli_query($mysqli, "SELECT client_id, client_name FROM clients WHERE client_archived_at IS NULL $access_permission_query ORDER BY client_name ASC");
 }
 
-// OS typeahead suggestions
-$os_sql = mysqli_query($mysqli, "SELECT DISTINCT asset_os AS label FROM assets WHERE asset_archived_at IS NULL");
-if ($os_sql && mysqli_num_rows($os_sql) > 0) {
-    $os_arr = [];
-    while ($row = mysqli_fetch_assoc($os_sql)) {
-        // jQuery UI Autocomplete expects {label: "...", value: "..."}
-        $label = $row['label'];
-        $os_arr[] = ['label' => $label, 'value' => $label];
-    }
-    $json_os = json_encode($os_arr);
-}
+// Typeahead suggestions for make, model and OS
+require_once '../../includes/asset_autocomplete.php';
+$json_make  = buildAssetAutocompleteJson($mysqli, 'asset_make');
+$json_model = buildAssetAutocompleteJson($mysqli, 'asset_model');
+$json_os    = buildAssetAutocompleteJson($mysqli, 'asset_os');
 
 $sql_tags_select = mysqli_query($mysqli, "SELECT tag_id, tag_name FROM tags WHERE tag_type = 5 ORDER BY tag_name ASC");
 
@@ -137,7 +131,7 @@ ob_start();
                             <div class="input-group-prepend">
                                 <span class="input-group-text"><i class="fa fa-fw fa-building"></i></span>
                             </div>
-                            <input type="text" class="form-control" name="make" placeholder="e.g. Dell, HP, Lenovo" maxlength="200">
+                            <input type="text" class="form-control" name="make" id="make" placeholder="e.g. Dell, HP, Lenovo" maxlength="200">
                         </div>
                     </div>
 
@@ -147,7 +141,7 @@ ob_start();
                             <div class="input-group-prepend">
                                 <span class="input-group-text"><i class="fa fa-fw fa-cube"></i></span>
                             </div>
-                            <input type="text" class="form-control" name="model" placeholder="e.g. PowerEdge R740" maxlength="200">
+                            <input type="text" class="form-control" name="model" id="model" placeholder="e.g. PowerEdge R740" maxlength="200">
                         </div>
                     </div>
 
@@ -528,14 +522,23 @@ ob_start();
 <script src="/plugins/jquery-ui/jquery-ui.min.js"></script>
 <script>
     $(function() {
-        var operatingSystems = <?php echo $json_os; ?>;
-        $("#os").autocomplete({
-            source: operatingSystems,  // Should be an array of objects with 'label' and 'value'
-            select: function(event, ui) {
-                $("#os").val(ui.item.label); // Set the input field value to the selected label
-                return false;
-            }
-        });
+        var makes  = <?= $json_make ?>;
+        var models = <?= $json_model ?>;
+        var operatingSystems = <?= $json_os ?>;
+
+        function bindAutocomplete(selector, source) {
+            $(selector).autocomplete({
+                source: source,
+                select: function(event, ui) {
+                    $(selector).val(ui.item.label);
+                    return false;
+                }
+            });
+        }
+
+        bindAutocomplete("#make",  makes);
+        bindAutocomplete("#model", models);
+        bindAutocomplete("#os",    operatingSystems);
     });
 </script>
 
