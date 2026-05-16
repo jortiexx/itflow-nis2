@@ -4710,6 +4710,37 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.13'");
     }
 
+    // 2.4.4.13 -> 2.4.4.14: phase 15 hotfix — proactively soft-archive
+    // orphan file rows whose on-disk content is missing. The legacy file
+    // sweeper in v0.19.1+ auto-archives a row after the third miss, but
+    // doing it here as a one-shot during schema migration means the
+    // first-login sweeper queue is already clean, regardless of which
+    // sweeper revision the operator happens to be on. Defense in depth
+    // for installs that skipped intermediate hotfix versions.
+    if ($current_db_version == '2.4.4.13') {
+        $uploads_root = __DIR__ . '/../uploads/clients';
+        $orphans_archived = 0;
+        $orphan_res = mysqli_query($mysqli,
+            "SELECT file_id, file_client_id, file_reference_name
+             FROM files
+             WHERE file_encrypted = 0 AND file_archived_at IS NULL");
+        while ($orphan_res && ($row = mysqli_fetch_assoc($orphan_res))) {
+            $cid = intval($row['file_client_id']);
+            $ref = basename((string)$row['file_reference_name']);
+            $path = $uploads_root . '/' . $cid . '/' . $ref;
+            if (!is_file($path) || !is_readable($path)) {
+                $fid = intval($row['file_id']);
+                mysqli_query($mysqli,
+                    "UPDATE files SET file_archived_at = NOW() WHERE file_id = $fid");
+                $orphans_archived++;
+            }
+        }
+        if ($orphans_archived > 0) {
+            error_log("itflow migration 2.4.4.14: archived $orphans_archived orphan file row(s)");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.14'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite
