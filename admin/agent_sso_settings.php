@@ -65,20 +65,20 @@ az login --use-device-code --allow-no-subscriptions
 # 3) Create the app + a 24-month client secret. Redirect URI is hard-coded
 #    for this ITFlow install.
 \$redirect = "{$_ps_redirect}"
-\$app = az ad app create ``
-    --display-name "ITFlow Agent SSO" ``
-    --sign-in-audience AzureADMyOrg ``
-    --web-redirect-uris \$redirect ``
-    --enable-id-token-issuance true ``
+\$app = az ad app create `
+    --display-name "ITFlow Agent SSO" `
+    --sign-in-audience AzureADMyOrg `
+    --web-redirect-uris \$redirect `
+    --enable-id-token-issuance true `
     --output json --only-show-errors | ConvertFrom-Json
 \$client_id     = \$app.appId
 \$app_object_id = \$app.id
 
 \$end_date = (Get-Date).AddMonths(24).ToString("yyyy-MM-ddTHH:mm:ssZ")
-\$secret = az ad app credential reset ``
-    --id \$app_object_id ``
-    --display-name "itflow-sso" ``
-    --end-date \$end_date ``
+\$secret = az ad app credential reset `
+    --id \$app_object_id `
+    --display-name "itflow-sso" `
+    --end-date \$end_date `
     --output json --only-show-errors | ConvertFrom-Json
 
 # 4) Print the values to paste back into the form below
