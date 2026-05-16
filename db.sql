@@ -2364,6 +2364,7 @@ CREATE TABLE `settings` (
   `config_agent_sso_redirect_uri` varchar(255) DEFAULT NULL,
   `config_agent_sso_jit_provisioning` tinyint(1) NOT NULL DEFAULT 0,
   `config_agent_sso_default_role_id` int(11) NOT NULL DEFAULT 0,
+  `config_agent_sso_jit_required_group_id` varchar(36) DEFAULT NULL,
   `config_security_audit_retention_days` int(11) NOT NULL DEFAULT 365,
   `config_document_version_retention_days` int(11) NOT NULL DEFAULT 365,
   `config_ratelimit_enabled` tinyint(1) NOT NULL DEFAULT 1,

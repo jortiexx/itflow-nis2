@@ -9,19 +9,21 @@ $row = mysqli_fetch_assoc(mysqli_query(
             config_agent_sso_client_secret,
             config_agent_sso_redirect_uri,
             config_agent_sso_jit_provisioning,
-            config_agent_sso_default_role_id
+            config_agent_sso_default_role_id,
+            config_agent_sso_jit_required_group_id
      FROM settings
      WHERE company_id = 1
      LIMIT 1"
 ));
 
-$enabled          = !empty($row['config_agent_sso_enabled']);
-$tenant_id        = $row['config_agent_sso_tenant_id'] ?? '';
-$sso_client_id    = $row['config_agent_sso_client_id'] ?? '';
-$sso_client_secret = $row['config_agent_sso_client_secret'] ?? '';
-$redirect_uri     = $row['config_agent_sso_redirect_uri'] ?? '';
-$jit              = !empty($row['config_agent_sso_jit_provisioning']);
-$default_role_id  = intval($row['config_agent_sso_default_role_id'] ?? 0);
+$enabled               = !empty($row['config_agent_sso_enabled']);
+$tenant_id             = $row['config_agent_sso_tenant_id'] ?? '';
+$sso_client_id         = $row['config_agent_sso_client_id'] ?? '';
+$sso_client_secret     = $row['config_agent_sso_client_secret'] ?? '';
+$redirect_uri          = $row['config_agent_sso_redirect_uri'] ?? '';
+$jit                   = !empty($row['config_agent_sso_jit_provisioning']);
+$default_role_id       = intval($row['config_agent_sso_default_role_id'] ?? 0);
+$jit_required_group_id = $row['config_agent_sso_jit_required_group_id'] ?? '';
 
 $base = ($config_https_only ? 'https://' : 'http://') . $config_base_url;
 $auto_redirect_uri = "$base/agent/login_entra_callback.php";
@@ -81,7 +83,28 @@ az login --use-device-code --allow-no-subscriptions
     --end-date \$end_date `
     --output json --only-show-errors | ConvertFrom-Json
 
-# 4) Print the values to paste back into the form below
+# 4) Add Microsoft Graph 'User.Read' delegated permission so ITFlow can call
+#    /me/checkMemberGroups for group-gated JIT provisioning, and admin-consent
+#    it tenant-wide so users don't see a consent prompt on first sign-in.
+\$graph_app_id    = "00000003-0000-0000-c000-000000000000"
+\$user_read_scope = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
+az ad app permission add `
+    --id \$client_id `
+    --api \$graph_app_id `
+    --api-permissions "\$user_read_scope=Scope" `
+    --only-show-errors | Out-Null
+Start-Sleep -Seconds 5  # propagation
+az ad app permission admin-consent --id \$client_id --only-show-errors
+
+# 5) (Optional) list groups so you can pick the object ID of the group whose
+#    members are allowed to be JIT-provisioned. Paste the chosen Object ID
+#    into the 'Required Entra group' field on the SSO settings page.
+Write-Host ""
+Write-Host "Available Entra groups (pick one for the JIT-required-group field):" -ForegroundColor Cyan
+az ad group list --query "[].{name:displayName, id:id}" -o table
+
+# 6) Print the credentials to paste back into the form below
+Write-Host ""
 Write-Host "Tenant ID:     \$tenant_id"        -ForegroundColor Green
 Write-Host "Client ID:     \$client_id"        -ForegroundColor Green
 Write-Host "Client Secret: \$(\$secret.password)" -ForegroundColor Yellow
@@ -154,6 +177,8 @@ PS;
                             <li>Click <strong>Register</strong>. Copy <em>Directory (tenant) ID</em> + <em>Application (client) ID</em> from the Overview page → paste into the form below.</li>
                             <li>Left nav → <strong>Certificates &amp; secrets</strong> → <strong>+ New client secret</strong>. Description: <code>itflow-sso</code>; expiry: 24 months. Copy the <strong>Value</strong> (the secret, NOT the secret ID) → paste below.</li>
                             <li>Left nav → <strong>Authentication</strong> → under "Implicit grant and hybrid flows" tick <strong>ID tokens (used for implicit and hybrid flows)</strong> → Save.</li>
+                            <li>Left nav → <strong>API permissions</strong> → <strong>+ Add a permission</strong> → <strong>Microsoft Graph</strong> → <strong>Delegated permissions</strong> → tick <code>User.Read</code> → <strong>Add permissions</strong>. Then <strong>Grant admin consent for &lt;tenant&gt;</strong>. Required for group-gated JIT provisioning (the app needs to call <code>/me/checkMemberGroups</code>).</li>
+                            <li>(Optional, for group-gated JIT) <a href="https://entra.microsoft.com/#view/Microsoft_AAD_IAM/GroupsManagementMenuBlade/~/AllGroups" target="_blank">Groups <i class="fa fa-fw fa-external-link-alt"></i></a> → pick the group whose members may be auto-provisioned → copy the <em>Object ID</em>. Paste it into <em>Required Entra group</em> on this settings page.</li>
                             <li>(Recommended) <a href="https://entra.microsoft.com/#view/Microsoft_AAD_IAM/StartboardApplicationsMenuBlade/~/AppAppsPreview" target="_blank">Enterprise applications <i class="fa fa-fw fa-external-link-alt"></i></a> → ITFlow Agent SSO → <strong>Properties</strong> → <em>Assignment required?</em> = Yes; then <strong>Users and groups</strong> → assign the agents who should be able to sign in.</li>
                         </ol>
                     </div>
@@ -277,6 +302,24 @@ PS;
                         <?php } ?>
                     </select>
                 </div>
+            </div>
+
+            <div class="form-group">
+                <label>Required Entra group (object ID) for JIT</label>
+                <div class="input-group">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text"><i class="fa fa-fw fa-users"></i></span>
+                    </div>
+                    <input type="text" class="form-control" name="agent_sso_jit_required_group_id"
+                           placeholder="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee (leave empty to disable group gating)"
+                           value="<?= nullable_htmlentities($jit_required_group_id) ?>">
+                </div>
+                <small class="form-text text-muted">
+                    Optional. When set, only sign-ins whose identity is a member (direct or transitive) of this Entra group will be JIT-provisioned. Find the object ID in the Entra portal under <em>Groups → &lt;your group&gt; → Object ID</em>, or run:
+                    <code>az ad group list --query "[].{name:displayName, id:id}" -o table</code>.
+                    Requires the app's <em>Microsoft Graph User.Read</em> delegated permission to be granted (the Setup helper adds and consents this for you).
+                    Pre-existing local accounts (matched on Entra <em>oid</em> or email) sign in regardless of this setting; gating applies to JIT creation only.
+                </small>
             </div>
 
             <hr>

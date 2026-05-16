@@ -58,7 +58,8 @@ $row = mysqli_fetch_assoc(mysqli_query(
             config_agent_sso_client_secret,
             config_agent_sso_redirect_uri,
             config_agent_sso_jit_provisioning,
-            config_agent_sso_default_role_id
+            config_agent_sso_default_role_id,
+            config_agent_sso_jit_required_group_id
      FROM settings
      WHERE company_id = 1
      LIMIT 1"
@@ -73,8 +74,9 @@ $tenant_id        = trim($row['config_agent_sso_tenant_id'] ?? '');
 $client_id        = trim($row['config_agent_sso_client_id'] ?? '');
 $client_secret    = trim($row['config_agent_sso_client_secret'] ?? '');
 $redirect_uri     = trim($row['config_agent_sso_redirect_uri'] ?? '');
-$jit_provisioning = !empty($row['config_agent_sso_jit_provisioning']);
-$default_role_id  = intval($row['config_agent_sso_default_role_id'] ?? 0);
+$jit_provisioning       = !empty($row['config_agent_sso_jit_provisioning']);
+$default_role_id        = intval($row['config_agent_sso_default_role_id'] ?? 0);
+$jit_required_group_id  = trim($row['config_agent_sso_jit_required_group_id'] ?? '');
 
 if ($tenant_id === '' || $client_id === '' || $client_secret === '' || $redirect_uri === '') {
     ssoFail('Agent SSO is not fully configured');
@@ -171,6 +173,42 @@ if (!$user && $entra_email !== '') {
 }
 
 // 3. JIT provisioning
+//
+// When a required-group is configured, gate JIT-creation on Graph
+// /me/checkMemberGroups: the sign-in identity must be a member (direct
+// or transitive) of that Entra group before we'll create a local agent
+// account. Pre-existing accounts (matched at steps 1/2 above) bypass
+// this check by design — group governance for *existing* accounts is a
+// separate concern handled by admin user management.
+if (!$user && $jit_provisioning && $entra_email !== '' && $default_role_id > 0 && $jit_required_group_id !== '') {
+    if (empty($tokens['access_token'])) {
+        ssoFail('Token response missing access_token (cannot verify group membership)');
+    }
+    try {
+        $is_member = entraCheckGroupMembership($tokens['access_token'], $jit_required_group_id);
+    } catch (EntraSsoException $e) {
+        securityAudit('sso.jit.group_check_failed', [
+            'metadata' => [
+                'oid'            => $claims['oid'] ?? null,
+                'email'          => $entra_email,
+                'required_group' => $jit_required_group_id,
+                'detail'         => $e->getMessage(),
+            ],
+        ]);
+        ssoFail('Could not verify group membership', $e->getMessage());
+    }
+    if (!$is_member) {
+        securityAudit('sso.jit.group_denied', [
+            'metadata' => [
+                'oid'            => $claims['oid'] ?? null,
+                'email'          => $entra_email,
+                'required_group' => $jit_required_group_id,
+            ],
+        ]);
+        ssoFail('Not authorised to be auto-provisioned', "User $entra_email is not a member of the required Entra group");
+    }
+}
+
 if (!$user && $jit_provisioning && $entra_email !== '' && $default_role_id > 0) {
     $name_escaped  = mysqli_real_escape_string($mysqli, $entra_name);
     $email_escaped = $entra_email;

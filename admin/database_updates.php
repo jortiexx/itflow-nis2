@@ -4778,6 +4778,19 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.14'");
     }
 
+    // 2.4.4.14 -> 2.4.4.15: phase 19 — group-gated JIT provisioning for
+    // Entra SSO. New optional column on settings storing the Azure AD /
+    // Entra group object ID a sign-in identity must be a member of
+    // before JIT-provisioning will create a local agent account.
+    // NULL/empty = old behaviour (any successful sign-in qualifies for
+    // JIT). When set, login_entra_callback.php calls Graph
+    // /me/checkMemberGroups and refuses JIT for non-members.
+    if ($current_db_version == '2.4.4.14') {
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_agent_sso_jit_required_group_id` VARCHAR(36) NULL DEFAULT NULL");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.15'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

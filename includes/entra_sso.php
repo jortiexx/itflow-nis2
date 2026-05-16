@@ -53,6 +53,13 @@ function entraGeneratePkcePair(): array
     return ['verifier' => $verifier, 'challenge' => $challenge];
 }
 
+// OIDC scopes plus Microsoft Graph User.Read so the access_token issued
+// can call /v1.0/me/checkMemberGroups. User.Read is one of the most
+// basic Graph delegated permissions; it's auto-included on newly
+// registered apps and requires only user-level consent. Needed for the
+// group-gated JIT-provisioning check in phase 19.
+const ENTRA_SSO_SCOPES = 'openid profile email User.Read';
+
 function entraAuthorizationUrl(string $tenant_id, string $client_id, string $redirect_uri, string $state, string $nonce, string $pkce_challenge): string
 {
     $params = [
@@ -60,7 +67,7 @@ function entraAuthorizationUrl(string $tenant_id, string $client_id, string $red
         'response_type'         => 'code',
         'redirect_uri'          => $redirect_uri,
         'response_mode'         => 'query',
-        'scope'                 => 'openid profile email',
+        'scope'                 => ENTRA_SSO_SCOPES,
         'state'                 => $state,
         'nonce'                 => $nonce,
         'code_challenge'        => $pkce_challenge,
@@ -77,7 +84,7 @@ function entraExchangeCodeForTokens(string $tenant_id, string $client_id, string
 
     $body = http_build_query([
         'client_id'     => $client_id,
-        'scope'         => 'openid profile email',
+        'scope'         => ENTRA_SSO_SCOPES,
         'code'          => $code,
         'redirect_uri'  => $redirect_uri,
         'grant_type'    => 'authorization_code',
@@ -323,4 +330,68 @@ function entraValidateIdToken(string $id_token, string $tenant_id, string $clien
     }
 
     return $payload;
+}
+
+/**
+ * Group-gated JIT provisioning helper.
+ *
+ * POSTs to Microsoft Graph /v1.0/me/checkMemberGroups with the configured
+ * group object ID and returns true if the signed-in user is a member
+ * (direct or transitive). The endpoint correctly handles nested-group
+ * membership without us having to walk the hierarchy. Requires the
+ * access_token to have been issued with the User.Read delegated scope
+ * (configured in ENTRA_SSO_SCOPES above).
+ *
+ * Throws EntraSsoException on transport / auth failure so the caller can
+ * distinguish "user is not in the group" (returns false) from "we
+ * couldn't verify" (throws). The callback treats both as ssoFail but
+ * with different reason strings for the audit log.
+ */
+function entraCheckGroupMembership(string $access_token, string $required_group_id): bool
+{
+    $url  = 'https://graph.microsoft.com/v1.0/me/checkMemberGroups';
+    $body = json_encode(['groupIds' => [$required_group_id]], JSON_UNESCAPED_SLASHES);
+    if ($body === false) {
+        throw new EntraSsoException('Failed to encode checkMemberGroups body');
+    }
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $url,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'Authorization: Bearer ' . $access_token,
+            'Content-Type: application/json',
+            'Accept: application/json',
+        ],
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+    $raw       = curl_exec($ch);
+    $err       = curl_error($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($raw === false) {
+        throw new EntraSsoException("Graph checkMemberGroups request failed: $err");
+    }
+    if ($http_code !== 200) {
+        $hint = '';
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded) && isset($decoded['error']['message'])) {
+            $hint = ' — ' . $decoded['error']['message'];
+        }
+        throw new EntraSsoException("Graph checkMemberGroups returned HTTP $http_code$hint");
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded) || !isset($decoded['value']) || !is_array($decoded['value'])) {
+        throw new EntraSsoException('Graph checkMemberGroups returned malformed response');
+    }
+
+    return in_array($required_group_id, $decoded['value'], true);
 }

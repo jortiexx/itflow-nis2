@@ -20,6 +20,41 @@ This file tracks changes specific to this fork. The upstream `CHANGELOG.md` cont
 
 ---
 
+## v0.20.0-nis2-sso-groups — Phase 19: group-gated JIT provisioning
+
+JIT-provisioning for Entra SSO can now be gated on Entra group membership: a sign-in identity must be a member (direct or transitive) of a configured Entra group before a local agent account is auto-created. Pre-existing local accounts (matched on `oid` or email) sign in regardless — group governance for existing accounts is a separate concern handled by admin user management.
+
+### Schema (DB version 2.4.4.15)
+One new optional column on `settings`:
+- `config_agent_sso_jit_required_group_id` (VARCHAR 36, NULL by default) — Entra group object ID. NULL/empty preserves the previous ungated JIT behaviour.
+
+### Token scope
+`ENTRA_SSO_SCOPES` now includes `User.Read` (Microsoft Graph delegated). The access token issued by the OIDC flow is consequently scoped to call `https://graph.microsoft.com/v1.0/me/checkMemberGroups`. Existing apps may need an admin-consent on first sign-in after the upgrade; the Setup helper PowerShell snippet now runs `az ad app permission add` + `az ad app permission admin-consent` automatically.
+
+### Callback flow
+Before the JIT-creation `INSERT`, if a required group is configured, `entraCheckGroupMembership($access_token, $group_id)` POSTs `{groupIds: [$group_id]}` to `/me/checkMemberGroups`. The endpoint returns the subset the user is a member of (including nested groups), so we don't have to walk the hierarchy ourselves. Outcomes:
+- **Member:** proceed to JIT INSERT.
+- **Not a member:** `ssoFail('Not authorised to be auto-provisioned')`, audit event `sso.jit.group_denied` with `oid`, `email`, `required_group`.
+- **Graph call fails:** `ssoFail('Could not verify group membership')`, audit event `sso.jit.group_check_failed` with the Graph error string. We fail closed.
+
+### UI
+- New form field on `admin/agent_sso_settings.php`: *Required Entra group (object ID) for JIT*. Optional GUID; empty disables the gate.
+- Setup helper PowerShell snippet extended with the User.Read permission grant + a `az ad group list` lookup so the operator can copy the chosen group's object ID directly.
+- Portal-route instructions extended with the equivalent "API permissions → Microsoft Graph → User.Read → Grant admin consent" steps.
+
+### What this is not
+- Not an ongoing-access governance check — existing accounts that lose group membership later keep their local access until an admin archives them.
+- Not a role-mapper — group membership is a yes/no gate; the role still comes from the default-role-for-JIT setting.
+- Not multi-group — one required group only. If you need an OR over several groups, create a parent group with the others as members (Entra nested membership is transparently honoured).
+
+---
+
+## v0.19.4-sso-helper-ps — Phase 17 hotfix: PowerShell line-continuation
+
+Setup-helper modal generated PowerShell with double backticks (`\`\``) at line endings. PowerShell's continuation operator is a single backtick (`\``); the double-backtick form collapsed `az ad app create` onto its first physical line (missing-argument error) and re-parsed subsequent lines as fresh-but-malformed commands. Operator ended up with an empty Client ID and empty Client Secret in the snippet's output. No directory state was created on the failed run.
+
+---
+
 ## v0.19.3-orphan-preflight — Phase 15 hotfix: unconditional orphan preflight
 
 Defensive forward-fix to make the *whole* migration pipeline ghost-row-safe regardless of source DB version. `admin/database_updates.php` now runs an unconditional preflight before the version-stepped loop: any `files` row with `file_encrypted = 0 AND file_archived_at IS NULL` whose on-disk content is missing is soft-archived (`file_archived_at = NOW()`). Idempotent — no-op when nothing is missing, gated on schema readiness so pre-phase-15 installs don't error.
