@@ -33,7 +33,7 @@ if (empty($_SESSION['user_id']) || empty($_SESSION['logged'])) {
 $user_id = intval($_SESSION['user_id']);
 
 $rs = mysqli_query($mysqli,
-    "SELECT credential_id, prf_salt
+    "SELECT credential_id, prf_salt, transports
      FROM user_vault_unlock_methods
      WHERE user_id = $user_id AND method_type = 'webauthn_prf'
        AND disabled_at IS NULL
@@ -42,15 +42,16 @@ $creds = [];
 $prf_salt_b64 = null;
 if ($rs) {
     while ($row = mysqli_fetch_assoc($rs)) {
-        $creds[] = ['type' => 'public-key', 'id' => $row['credential_id']];
-        // Use the PRF salt of the first method as the eval input. When the user
-        // has multiple PRF methods we still issue one challenge with one salt;
-        // each authenticator will produce its own PRF output bound to that salt
-        // (which is fine because each method stored a wrapping under that
-        // method's authenticator + that method's salt — and the salts are
-        // identical per-method only if we use the same one. To keep it simple
-        // we send each method's salt as an entry-specific eval; spec allows
-        // evalByCredential.)
+        // Pass transports so the browser knows whether to surface the
+        // platform authenticator (Windows Hello / Touch ID) rather than
+        // showing the generic "security key / phone" picker. Without this
+        // hint Edge/Chrome on Windows offers cross-device options that
+        // the user cannot complete.
+        $entry = ['type' => 'public-key', 'id' => $row['credential_id']];
+        if (!empty($row['transports'])) {
+            $entry['transports'] = array_values(array_filter(array_map('trim', explode(',', $row['transports']))));
+        }
+        $creds[] = $entry;
     }
 }
 if (empty($creds)) {
