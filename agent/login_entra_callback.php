@@ -273,16 +273,21 @@ securityAudit('sso.login.success', [
     ],
 ]);
 
-// If the user has a vault PIN enrolled, force PIN entry before exposing
-// any pages that may attempt to decrypt credentials.
-if (vaultUserHasMethod($user_id, 'pin', $mysqli)) {
+// If the user has any vault unlock method enrolled (PIN or WebAuthn PRF),
+// force unlock entry before exposing pages that may attempt to decrypt
+// credentials. Without this redirect, PRF-only users land on the start
+// page with the vault still locked and no obvious way to unlock it.
+if (
+    vaultUserHasMethod($user_id, 'pin', $mysqli)
+    || vaultUserHasMethod($user_id, 'webauthn_prf', $mysqli)
+) {
     header('Location: /agent/vault_unlock.php');
     exit;
 }
 
 // No vault unlock method enrolled — the user gets a working session but
-// the credential vault stays locked until they set up a PIN via the
-// password-login flow.
+// the credential vault stays locked until they set up a PIN or PRF
+// method via the password-login flow.
 $start_page = $config_start_page ?? 'clients.php';
 header("Location: /agent/$start_page");
 exit;
