@@ -70,6 +70,14 @@ echo json_encode([
     'attestation'       => 'none',
     'timeout'           => 60000,
     'excludeCredentials'=> $existing,
+    // Hint the browser to surface the platform authenticator (Windows Hello,
+    // Touch ID) first. Without this, Windows 11's "Choose a passkey" picker
+    // can route the user to "Use a phone" or "Use a security key" — both
+    // typically lack PRF support during registration, causing the
+    // enrolment to fail. Browsers that don't recognise hints fall back to
+    // showing the full picker; users with PRF-capable hardware keys can
+    // still select that path.
+    'hints' => ['client-device'],
     'extensions' => [
         'prf' => ['eval' => ['first' => webauthnB64UrlEncode($prf_salt)]],
     ],

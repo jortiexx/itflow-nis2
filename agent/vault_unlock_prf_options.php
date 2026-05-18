@@ -87,6 +87,11 @@ echo json_encode([
     'allowCredentials' => $creds,
     'userVerification' => 'required',
     'timeout'          => 60000,
+    // Hint the browser to use the platform authenticator first. Mirrors the
+    // enrolment options — without this, the Windows "Choose a passkey"
+    // picker can suggest cross-device options that don't match the
+    // platform-bound credential and shows "no passkeys available".
+    'hints' => ['client-device'],
     'extensions' => [
         'prf' => [
             // evalByCredential: keys are credential ids (base64url), values are
