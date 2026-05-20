@@ -4791,6 +4791,28 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.15'");
     }
 
+    // 2.4.4.15 -> 2.4.4.16: performance — composite index on `logs` for
+    // the rate-limit query path. Without this index, every call to
+    // rateLimitCheckScope() does a full table scan on `logs`. On a 3.5M
+    // row table this took ~5.7s per call, dominating SSO callback and
+    // vault unlock latency. The four-column composite matches the WHERE
+    // exactly: equality on log_type/log_action/log_ip, range on
+    // log_created_at as the trailing column. InnoDB ALGORITHM=INPLACE
+    // LOCK=NONE on MariaDB 10.5+/MySQL 5.7+ creates this without
+    // blocking writes. On a 3.5M row table it took ~12s in our prod.
+    if ($current_db_version == '2.4.4.15') {
+        $has_index = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.statistics
+             WHERE table_schema = DATABASE()
+               AND table_name   = 'logs'
+               AND index_name   = 'idx_logs_ratelimit'"));
+        if (!$has_index || intval($has_index['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `logs`
+                ADD INDEX `idx_logs_ratelimit` (`log_type`, `log_action`, `log_ip`, `log_created_at`)");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.16'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite
