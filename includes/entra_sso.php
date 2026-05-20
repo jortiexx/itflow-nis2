@@ -62,6 +62,12 @@ const ENTRA_SSO_SCOPES = 'openid profile email User.Read';
 
 function entraAuthorizationUrl(string $tenant_id, string $client_id, string $redirect_uri, string $state, string $nonce, string $pkce_challenge): string
 {
+    // Note: previously we sent prompt=select_account to force the
+    // Microsoft account picker on every sign-in. That added 1-2s of
+    // latency for users who already had a valid MS session. Dropping it
+    // lets MS use silent SSO when a session exists; users can still
+    // switch accounts via the "Sign in with a different account" link
+    // on the MS prompt page when needed.
     $params = [
         'client_id'             => $client_id,
         'response_type'         => 'code',
@@ -72,7 +78,6 @@ function entraAuthorizationUrl(string $tenant_id, string $client_id, string $red
         'nonce'                 => $nonce,
         'code_challenge'        => $pkce_challenge,
         'code_challenge_method' => 'S256',
-        'prompt'                => 'select_account',
     ];
     return "https://login.microsoftonline.com/" . rawurlencode($tenant_id)
         . "/oauth2/v2.0/authorize?" . http_build_query($params);

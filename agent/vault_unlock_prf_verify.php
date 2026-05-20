@@ -42,6 +42,18 @@ if (empty($_SESSION['user_id']) || empty($_SESSION['logged'])) {
     exit(json_encode(['error' => 'not authenticated']));
 }
 
+// ---- Perf instrumentation ----
+$perf_t0 = microtime(true);
+$perf_stage = $perf_t0;
+$perf_log = function (string $label) use (&$perf_stage, $perf_t0): void {
+    $now = microtime(true);
+    $ms_stage = ($now - $perf_stage) * 1000;
+    $ms_total = ($now - $perf_t0)    * 1000;
+    error_log(sprintf('ITFLOW_PERF vault_prf_verify %s stage=%.1fms total=%.1fms', $label, $ms_stage, $ms_total));
+    $perf_stage = $now;
+};
+$perf_log('start');
+
 $user_id   = intval($_SESSION['user_id']);
 $challenge = $_SESSION['vault_prf_unlock_challenge']    ?? null;
 $salts_map = $_SESSION['vault_prf_unlock_salts_by_cred'] ?? null;
@@ -128,6 +140,7 @@ if (!$assertion_ok) {
     http_response_code(400);
     exit(json_encode(['error' => 'assertion verification failed']));
 }
+$perf_log('assertion_verify');
 
 // Decode PRF output
 try {
@@ -146,6 +159,7 @@ if ($unlock === null) {
     http_response_code(400);
     exit(json_encode(['error' => 'unable to unwrap vault with this authenticator']));
 }
+$perf_log('prf_unwrap');
 
 // Update sign_count (vaultUnlockWithPrf already reset failed_attempts/last_used_at).
 $mid = intval($method['method_id']);
@@ -159,6 +173,7 @@ generateUserSessionKey($unlock['master']);
 if (!empty($unlock['privkey'])) {
     pushUserPrivkeyToSession($unlock['privkey']);
 }
+$perf_log('session_setup');
 $_SESSION['vault_unlocked']    = true;
 $_SESSION['vault_unlocked_at'] = time();
 $_SESSION['vault_step_up_at']  = time();  // phase 18: PRF re-prompt is freshness proof
