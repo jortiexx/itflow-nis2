@@ -104,21 +104,6 @@ if (!hash_equals($pending['state'], (string)$_GET['state'])) {
     ssoFail('State parameter mismatch (possible CSRF)');
 }
 
-// ---- Perf instrumentation ----
-// Temporary timing harness. Each stage logs ms to the PHP error log so
-// we can see where SSO latency actually goes. Grep with:
-//   tail -f /var/log/apache2/error.log | grep ITFLOW_PERF
-$perf_t0 = microtime(true);
-$perf_stage = $perf_t0;
-$perf_log = function (string $label) use (&$perf_stage, $perf_t0): void {
-    $now = microtime(true);
-    $ms_stage = ($now - $perf_stage) * 1000;
-    $ms_total = ($now - $perf_t0)    * 1000;
-    error_log(sprintf('ITFLOW_PERF sso_callback %s stage=%.1fms total=%.1fms', $label, $ms_stage, $ms_total));
-    $perf_stage = $now;
-};
-$perf_log('start');
-
 // ---- Exchange code for tokens ----
 try {
     $tokens = entraExchangeCodeForTokens(
@@ -128,7 +113,6 @@ try {
 } catch (EntraSsoException $e) {
     ssoFail('Token exchange failed', $e->getMessage());
 }
-$perf_log('token_exchange');
 
 // ---- Validate ID token ----
 try {
@@ -136,7 +120,6 @@ try {
 } catch (EntraSsoException $e) {
     ssoFail('ID token validation failed', $e->getMessage());
 }
-$perf_log('id_token_validate');
 
 unset($_SESSION['agent_sso_pending']);
 
@@ -259,11 +242,9 @@ if (!$user && $jit_provisioning && $entra_email !== '' && $default_role_id > 0) 
 if (!$user) {
     ssoFail('No matching agent account', "oid=$entra_oid email=$entra_email");
 }
-$perf_log('user_lookup_and_jit');
 
 // ---- Establish session ----
 session_regenerate_id(true);
-$perf_log('session_regenerate');
 
 $user_id    = intval($user['user_id']);
 $user_name  = sanitizeInput($user['user_name']);
@@ -296,15 +277,13 @@ securityAudit('sso.login.success', [
 // force unlock entry before exposing pages that may attempt to decrypt
 // credentials. Without this redirect, PRF-only users land on the start
 // page with the vault still locked and no obvious way to unlock it.
-$has_pin = vaultUserHasMethod($user_id, 'pin', $mysqli);
-$has_prf = vaultUserHasMethod($user_id, 'webauthn_prf', $mysqli);
-$perf_log('vault_method_check');
-if ($has_pin || $has_prf) {
-    $perf_log('redirect_to_vault_unlock');
+if (
+    vaultUserHasMethod($user_id, 'pin', $mysqli)
+    || vaultUserHasMethod($user_id, 'webauthn_prf', $mysqli)
+) {
     header('Location: /agent/vault_unlock.php');
     exit;
 }
-$perf_log('redirect_to_start_page');
 
 // No vault unlock method enrolled — the user gets a working session but
 // the credential vault stays locked until they set up a PIN or PRF
