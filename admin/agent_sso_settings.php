@@ -10,20 +10,22 @@ $row = mysqli_fetch_assoc(mysqli_query(
             config_agent_sso_redirect_uri,
             config_agent_sso_jit_provisioning,
             config_agent_sso_default_role_id,
-            config_agent_sso_jit_required_group_id
+            config_agent_sso_jit_required_group_id,
+            config_default_login_method
      FROM settings
      WHERE company_id = 1
      LIMIT 1"
 ));
 
-$enabled               = !empty($row['config_agent_sso_enabled']);
-$tenant_id             = $row['config_agent_sso_tenant_id'] ?? '';
-$sso_client_id         = $row['config_agent_sso_client_id'] ?? '';
-$sso_client_secret     = $row['config_agent_sso_client_secret'] ?? '';
-$redirect_uri          = $row['config_agent_sso_redirect_uri'] ?? '';
-$jit                   = !empty($row['config_agent_sso_jit_provisioning']);
-$default_role_id       = intval($row['config_agent_sso_default_role_id'] ?? 0);
-$jit_required_group_id = $row['config_agent_sso_jit_required_group_id'] ?? '';
+$enabled                = !empty($row['config_agent_sso_enabled']);
+$tenant_id              = $row['config_agent_sso_tenant_id'] ?? '';
+$sso_client_id          = $row['config_agent_sso_client_id'] ?? '';
+$sso_client_secret      = $row['config_agent_sso_client_secret'] ?? '';
+$redirect_uri           = $row['config_agent_sso_redirect_uri'] ?? '';
+$jit                    = !empty($row['config_agent_sso_jit_provisioning']);
+$default_role_id        = intval($row['config_agent_sso_default_role_id'] ?? 0);
+$jit_required_group_id  = $row['config_agent_sso_jit_required_group_id'] ?? '';
+$default_login_method   = $row['config_default_login_method'] ?? 'local';
 
 $base = ($config_https_only ? 'https://' : 'http://') . $config_base_url;
 $auto_redirect_uri = "$base/agent/login_entra_callback.php";
@@ -263,6 +265,25 @@ PS;
                 <small class="form-text text-muted">
                     Must match the redirect URI configured in the Entra app registration exactly.
                     Default: <code><?= htmlentities($auto_redirect_uri) ?></code>
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label>Default login method</label>
+                <div class="input-group">
+                    <div class="input-group-prepend">
+                        <span class="input-group-text"><i class="fa fa-fw fa-sign-in-alt"></i></span>
+                    </div>
+                    <select class="form-control" name="default_login_method">
+                        <option value="local" <?= $default_login_method === 'entra' ? '' : 'selected' ?>>Local form (email + password)</option>
+                        <option value="entra" <?= $default_login_method === 'entra' ? 'selected' : '' ?>>Microsoft Entra SSO (auto-redirect)</option>
+                    </select>
+                </div>
+                <small class="form-text text-muted">
+                    When set to <em>Microsoft Entra SSO</em>, visiting <code>/login.php</code> redirects straight to the Entra sign-in flow — skipping the "Sign in with Microsoft" button click.
+                    Only takes effect when SSO is enabled above; otherwise the local form is shown regardless.
+                    <strong>Escape hatch:</strong> visit <code>/login.php?local=1</code> to force the local form (useful when SSO is misconfigured or for non-SSO admin accounts).
+                    Failed SSO sign-ins automatically fall back to the local form to avoid redirect loops.
                 </small>
             </div>
 

@@ -15,6 +15,10 @@ if (isset($_POST['edit_agent_sso_settings'])) {
     $jit_provisioning       = !empty($_POST['agent_sso_jit_provisioning']) ? 1 : 0;
     $default_role_id        = intval($_POST['agent_sso_default_role_id'] ?? 0);
     $jit_required_group_id  = trim($_POST['agent_sso_jit_required_group_id'] ?? '');
+    $default_login_method   = trim($_POST['default_login_method'] ?? 'local');
+    if (!in_array($default_login_method, ['local', 'entra'], true)) {
+        $default_login_method = 'local';
+    }
 
     // Reject obviously bogus tenant / client GUIDs to fail fast.
     $guid_re = '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/';
@@ -54,6 +58,8 @@ if (isset($_POST['edit_agent_sso_settings'])) {
         $secret_clause = ", config_agent_sso_client_secret = '$secret_e'";
     }
 
+    $default_login_method_e = mysqli_real_escape_string($mysqli, $default_login_method);
+
     mysqli_query($mysqli, "
         UPDATE settings
         SET config_agent_sso_enabled              = $enabled,
@@ -62,7 +68,8 @@ if (isset($_POST['edit_agent_sso_settings'])) {
             config_agent_sso_redirect_uri         = '$redirect_uri_e',
             config_agent_sso_jit_provisioning     = $jit_provisioning,
             config_agent_sso_default_role_id      = $default_role_id,
-            config_agent_sso_jit_required_group_id = $jit_group_id_clause
+            config_agent_sso_jit_required_group_id = $jit_group_id_clause,
+            config_default_login_method           = '$default_login_method_e'
             $secret_clause
         WHERE company_id = 1
     ");

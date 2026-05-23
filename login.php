@@ -85,7 +85,31 @@ $config_login_key_secret   = $row['config_login_key_secret'];
 $azure_client_id = $row['config_azure_client_id'] ?? null;
 
 // Agent SSO (Microsoft Entra ID) — shows the "Sign in with Microsoft" button on login.
-$config_agent_sso_enabled = !empty($row['config_agent_sso_enabled']);
+$config_agent_sso_enabled    = !empty($row['config_agent_sso_enabled']);
+$config_default_login_method = $row['config_default_login_method'] ?? 'local';
+
+// Auto-redirect to Entra SSO when the admin has nominated it as the
+// default login method. This skips the "Sign in with Microsoft" click
+// for daily-driver flows. Suppressed in any of these cases so the local
+// form stays reachable:
+//   - ?local=1 query parameter (explicit override for admin/local accounts)
+//   - this request is part of an ongoing login (POST, role choice, MFA)
+//   - the user just bounced back from a failed SSO attempt (login_message
+//     present) — avoids redirect loops. ssoFail() also appends ?local=1
+//     for belt-and-braces.
+$auto_redirect_to_entra = (
+    $_SERVER['REQUEST_METHOD'] === 'GET'
+    && $config_agent_sso_enabled
+    && $config_default_login_method === 'entra'
+    && empty($_GET['local'])
+    && empty($_SESSION['login_message'])
+    && empty($_SESSION['pending_dual_login'])
+    && empty($_SESSION['pending_mfa_login'])
+);
+if ($auto_redirect_to_entra) {
+    header('Location: /agent/login_entra.php');
+    exit;
+}
 
 $response         = null;
 $token_field      = null;

@@ -45,7 +45,11 @@ function ssoFail(string $reason, string $detail = ''): void
         'metadata' => ['reason' => $reason, 'detail' => $detail],
     ]);
     $_SESSION['login_message'] = "Sign-in failed: $reason";
-    header('Location: ../login.php');
+    // ?local=1 belt-and-braces against the auto-redirect loop when an
+    // admin has nominated Entra as the default login method: without it,
+    // login.php's auto-redirect would send the user straight back into
+    // the failing SSO flow.
+    header('Location: ../login.php?local=1');
     exit;
 }
 

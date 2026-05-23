@@ -4813,6 +4813,17 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.16'");
     }
 
+    // 2.4.4.16 -> 2.4.4.17: configurable default login method. Lets admins
+    // skip the "Sign in with Microsoft" extra click when SSO is the
+    // expected daily-driver. login.php uses this value to decide whether
+    // to auto-redirect a fresh GET to /agent/login_entra.php. Operators
+    // can always fall back to the local form via /login.php?local=1.
+    if ($current_db_version == '2.4.4.16') {
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN `config_default_login_method` VARCHAR(20) NOT NULL DEFAULT 'local'");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.17'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite
