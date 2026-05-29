@@ -1877,6 +1877,12 @@ function getAssetIcon($asset_type)
         $device_icon = "tv";
     } elseif ($asset_type == 'Virtual Machine') {
         $device_icon = "cloud";
+    } elseif ($asset_type == 'Patch Panel') {
+        $device_icon = "ethernet";
+    } elseif ($asset_type == 'Wallbox') {
+        $device_icon = "th";
+    } elseif ($asset_type == 'Keystone') {
+        $device_icon = "plug";
     } else {
         $device_icon = "tag";
     }

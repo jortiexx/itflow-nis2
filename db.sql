@@ -330,6 +330,9 @@ CREATE TABLE `assets` (
   `asset_location_id` int(11) NOT NULL DEFAULT 0,
   `asset_contact_id` int(11) NOT NULL DEFAULT 0,
   `asset_client_id` int(11) NOT NULL DEFAULT 0,
+  `asset_port_count` int(11) DEFAULT NULL,
+  `asset_poe_budget_watts` int(11) DEFAULT NULL,
+  `asset_stack_master_asset_id` int(11) DEFAULT NULL,
   PRIMARY KEY (`asset_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -1771,6 +1774,75 @@ CREATE TABLE `racks` (
   PRIMARY KEY (`rack_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `vlans`
+--
+
+DROP TABLE IF EXISTS `vlans`;
+CREATE TABLE `vlans` (
+  `vlan_id` int(11) NOT NULL AUTO_INCREMENT,
+  `vlan_number` int(11) NOT NULL,
+  `vlan_name` varchar(200) NOT NULL,
+  `vlan_description` varchar(500) DEFAULT NULL,
+  `vlan_color` varchar(7) DEFAULT '#6c757d',
+  `vlan_network_id` int(11) DEFAULT NULL,
+  `vlan_created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `vlan_updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  `vlan_archived_at` datetime DEFAULT NULL,
+  `vlan_client_id` int(11) NOT NULL,
+  PRIMARY KEY (`vlan_id`),
+  KEY `vlan_client_id` (`vlan_client_id`),
+  KEY `vlan_network_id` (`vlan_network_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `asset_ports`
+--
+
+DROP TABLE IF EXISTS `asset_ports`;
+CREATE TABLE `asset_ports` (
+  `port_id` int(11) NOT NULL AUTO_INCREMENT,
+  `port_number` int(11) NOT NULL,
+  `port_name` varchar(200) DEFAULT NULL,
+  `port_description` text DEFAULT NULL,
+  `port_type` varchar(200) DEFAULT NULL,
+  `port_mode` enum('access','trunk','hybrid','passive') NOT NULL DEFAULT 'passive',
+  `port_access_vlan_id` int(11) DEFAULT NULL,
+  `port_native_vlan_id` int(11) DEFAULT NULL,
+  `port_status` enum('up','down','admin-down','reserved','unknown') NOT NULL DEFAULT 'unknown',
+  `port_speed_mbps` int(11) DEFAULT NULL,
+  `port_poe_enabled` tinyint(1) NOT NULL DEFAULT 0,
+  `port_poe_watts_used` int(11) DEFAULT NULL,
+  `port_lacp_group` varchar(50) DEFAULT NULL,
+  `port_to_port_id` int(11) DEFAULT NULL,
+  `port_cable_label` varchar(100) DEFAULT NULL,
+  `port_notes` text DEFAULT NULL,
+  `port_created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `port_updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  `port_archived_at` datetime DEFAULT NULL,
+  `port_device_asset_id` int(11) NOT NULL,
+  `port_connected_asset_id` int(11) DEFAULT NULL,
+  PRIMARY KEY (`port_id`),
+  KEY `port_device_asset_id` (`port_device_asset_id`),
+  KEY `port_connected_asset_id` (`port_connected_asset_id`),
+  KEY `port_to_port_id` (`port_to_port_id`),
+  KEY `port_access_vlan_id` (`port_access_vlan_id`),
+  CONSTRAINT `asset_ports_ibfk_1` FOREIGN KEY (`port_device_asset_id`) REFERENCES `assets` (`asset_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `asset_port_trunk_vlans`
+--
+
+DROP TABLE IF EXISTS `asset_port_trunk_vlans`;
+CREATE TABLE `asset_port_trunk_vlans` (
+  `port_id` int(11) NOT NULL,
+  `vlan_id` int(11) NOT NULL,
+  PRIMARY KEY (`port_id`,`vlan_id`),
+  KEY `vlan_id` (`vlan_id`),
+  CONSTRAINT `asset_port_trunk_vlans_ibfk_1` FOREIGN KEY (`port_id`) REFERENCES `asset_ports` (`port_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Table structure for table `records`

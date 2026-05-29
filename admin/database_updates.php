@@ -4824,6 +4824,108 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.17'");
     }
 
+    // 2.4.4.17 -> 2.4.4.18: network port / switch documentation.
+    //
+    // Asset-first design: switches / patch panels / keystones / wallboxes
+    // are all just assets (asset_type tells them apart and matches the
+    // values upstream itflow already uses: 'Switch', 'Firewall/Router',
+    // 'Patch Panel', etc.). We add switch-specific metadata as nullable
+    // columns on `assets`, plus a per-port `asset_ports` table.
+    //
+    // We deliberately do NOT introduce a separate "device" table. An
+    // earlier draft of this migration did that (patch_panels) but it
+    // duplicated assets for every switch and made cross-references
+    // asynchronous — easy to forget to update one side. Single source of
+    // truth = assets.
+    //
+    // Tables:
+    //  - vlans                       — VLAN catalogue per client
+    //  - asset_ports                 — N rows per network-device asset
+    //  - asset_port_trunk_vlans      — m:n trunk-allowed VLAN list
+    //
+    // Asset columns (NULL for non-network assets):
+    //  - asset_port_count            — port count, source of truth for the
+    //                                  faceplate grid size
+    //  - asset_poe_budget_watts      — total PoE budget for the device
+    //  - asset_stack_master_asset_id — for stacked switches: which asset
+    //                                  is the stack master
+    if ($current_db_version == '2.4.4.17') {
+
+        // VLAN catalogue per client.
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `vlans` (
+            `vlan_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `vlan_number` INT(11) NOT NULL,
+            `vlan_name` VARCHAR(200) NOT NULL,
+            `vlan_description` VARCHAR(500) DEFAULT NULL,
+            `vlan_color` VARCHAR(7) DEFAULT '#6c757d',
+            `vlan_network_id` INT(11) DEFAULT NULL,
+            `vlan_created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `vlan_updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            `vlan_archived_at` DATETIME DEFAULT NULL,
+            `vlan_client_id` INT(11) NOT NULL,
+            PRIMARY KEY (`vlan_id`),
+            KEY `vlan_client_id` (`vlan_client_id`),
+            KEY `vlan_network_id` (`vlan_network_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        // Network-device metadata on assets (NULL for non-network assets).
+        // information_schema check so re-running this migration is idempotent.
+        $check = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name   = 'assets'
+               AND column_name  = 'asset_port_count'"));
+        if (!$check || intval($check['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `assets`
+                ADD COLUMN `asset_port_count` INT(11) DEFAULT NULL,
+                ADD COLUMN `asset_poe_budget_watts` INT(11) DEFAULT NULL,
+                ADD COLUMN `asset_stack_master_asset_id` INT(11) DEFAULT NULL");
+        }
+
+        // Per-port row. port_device_asset_id = the switch / patch panel itself.
+        // port_connected_asset_id = what is plugged in to this port.
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `asset_ports` (
+            `port_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `port_number` INT(11) NOT NULL,
+            `port_name` VARCHAR(200) DEFAULT NULL,
+            `port_description` TEXT DEFAULT NULL,
+            `port_type` VARCHAR(200) DEFAULT NULL,
+            `port_mode` ENUM('access','trunk','hybrid','passive') NOT NULL DEFAULT 'passive',
+            `port_access_vlan_id` INT(11) DEFAULT NULL,
+            `port_native_vlan_id` INT(11) DEFAULT NULL,
+            `port_status` ENUM('up','down','admin-down','reserved','unknown') NOT NULL DEFAULT 'unknown',
+            `port_speed_mbps` INT(11) DEFAULT NULL,
+            `port_poe_enabled` TINYINT(1) NOT NULL DEFAULT 0,
+            `port_poe_watts_used` INT(11) DEFAULT NULL,
+            `port_lacp_group` VARCHAR(50) DEFAULT NULL,
+            `port_to_port_id` INT(11) DEFAULT NULL,
+            `port_cable_label` VARCHAR(100) DEFAULT NULL,
+            `port_notes` TEXT DEFAULT NULL,
+            `port_created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `port_updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            `port_archived_at` DATETIME DEFAULT NULL,
+            `port_device_asset_id` INT(11) NOT NULL,
+            `port_connected_asset_id` INT(11) DEFAULT NULL,
+            PRIMARY KEY (`port_id`),
+            KEY `port_device_asset_id` (`port_device_asset_id`),
+            KEY `port_connected_asset_id` (`port_connected_asset_id`),
+            KEY `port_to_port_id` (`port_to_port_id`),
+            KEY `port_access_vlan_id` (`port_access_vlan_id`),
+            CONSTRAINT `asset_ports_ibfk_1` FOREIGN KEY (`port_device_asset_id`) REFERENCES `assets`(`asset_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        // Trunk-allowed VLANs (many-to-many: port × vlan).
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `asset_port_trunk_vlans` (
+            `port_id` INT(11) NOT NULL,
+            `vlan_id` INT(11) NOT NULL,
+            PRIMARY KEY (`port_id`, `vlan_id`),
+            KEY `vlan_id` (`vlan_id`),
+            CONSTRAINT `asset_port_trunk_vlans_ibfk_1` FOREIGN KEY (`port_id`) REFERENCES `asset_ports`(`port_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.18'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

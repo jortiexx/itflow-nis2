@@ -182,6 +182,27 @@
                         </li>
 
                         <li class="nav-item">
+                            <a href="/agent/vlans.php?client_id=<?php echo $client_id; ?>" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "vlans.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-layer-group"></i>
+                                <p>VLANs</p>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a href="/agent/network_devices.php?client_id=<?php echo $client_id; ?>" class="nav-link <?php if (in_array(basename($_SERVER["PHP_SELF"]), ['network_devices.php','network_device_details.php'])) { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-ethernet"></i>
+                                <p>Switches &amp; patches</p>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a href="/agent/network_topology.php?client_id=<?php echo $client_id; ?>" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "network_topology.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-project-diagram"></i>
+                                <p>Topology</p>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
                             <a href="/agent/racks.php?client_id=<?php echo $client_id; ?>" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "racks.php") { echo "active"; } ?>">
                                 <i class="nav-icon fas fa-server"></i>
                                 <p>

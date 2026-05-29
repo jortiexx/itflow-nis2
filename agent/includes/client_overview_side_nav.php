@@ -121,6 +121,24 @@ $num_software = $row['num'];
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="vlans.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "vlans.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-layer-group"></i>
+                            <p>VLANs</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="network_devices.php" class="nav-link <?php if (in_array(basename($_SERVER["PHP_SELF"]), ['network_devices.php','network_device_details.php'])) { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-server"></i>
+                            <p>Network devices</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="network_topology.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "network_topology.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-project-diagram"></i>
+                            <p>Topology</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="certificates.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "certificates.php") { echo "active"; } ?>">
                             <i class="nav-icon fas fa-lock"></i>
                             <p>
