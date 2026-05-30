@@ -4926,6 +4926,228 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.18'");
     }
 
+    // 2.4.4.18 -> 2.4.4.19: MSP metrics module.
+    //
+    // Internal dashboard that pulls from WeFact (recurring billing), TimeOn
+    // (timesheets) and Freshdesk (tickets), normalises into a small star
+    // schema, and renders MRR / hours / ticket trends inside itflow.
+    //
+    // Design notes:
+    //  - Tables live in the same MariaDB as itflow but in a `msp_*` namespace
+    //    so they are obviously separate from itflow core data. No FK from
+    //    itflow tables into these; one optional FK back from
+    //    msp_dim_customer.itflow_client_id into clients.client_id so a
+    //    metrics customer can link to its itflow client record.
+    //  - msp_fact_subscription_snapshot is append-only on
+    //    (customer_id, snapshot_date) — one row per billing day per
+    //    customer. Lets "growth over time" queries work even though WeFact
+    //    only exposes current state.
+    //  - msp_fact_hours_daily is keyed (customer, employee, date) with
+    //    upserts — re-running today's sync corrects, never duplicates.
+    //  - Bearer API keys follow the established fork pattern (see
+    //    config_smtp_password, config_agent_sso_client_secret): plaintext
+    //    in `settings`, protected by filesystem perms + DB at-rest.
+    if ($current_db_version == '2.4.4.18') {
+
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `msp_dim_customer` (
+            `customer_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `customer_name` VARCHAR(255) NOT NULL,
+            `source_wefact_debtor_id` VARCHAR(64) DEFAULT NULL,
+            `source_timeon_customer_id` VARCHAR(64) DEFAULT NULL,
+            `source_freshdesk_company_id` VARCHAR(64) DEFAULT NULL,
+            `itflow_client_id` INT(11) DEFAULT NULL,
+            `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+            `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`customer_id`),
+            UNIQUE KEY `uk_wefact` (`source_wefact_debtor_id`),
+            KEY `idx_timeon` (`source_timeon_customer_id`),
+            KEY `idx_freshdesk` (`source_freshdesk_company_id`),
+            KEY `idx_itflow_client` (`itflow_client_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `msp_dim_employee` (
+            `employee_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `employee_name` VARCHAR(255) NOT NULL,
+            `source_timeon_user_id` VARCHAR(64) DEFAULT NULL,
+            `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+            `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`employee_id`),
+            UNIQUE KEY `uk_timeon_user` (`source_timeon_user_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `msp_fact_subscription_snapshot` (
+            `snapshot_id` BIGINT(20) NOT NULL AUTO_INCREMENT,
+            `customer_id` INT(11) NOT NULL,
+            `snapshot_date` DATE NOT NULL,
+            `mrr_eur` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            `workplaces_count` INT(11) NOT NULL DEFAULT 0,
+            `subscription_count` INT(11) NOT NULL DEFAULT 0,
+            `raw_payload` LONGTEXT DEFAULT NULL,
+            `inserted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`snapshot_id`),
+            UNIQUE KEY `uk_customer_date` (`customer_id`, `snapshot_date`),
+            KEY `idx_snapshot_date` (`snapshot_date`),
+            CONSTRAINT `msp_fact_sub_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer`(`customer_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `msp_fact_hours_daily` (
+            `entry_id` BIGINT(20) NOT NULL AUTO_INCREMENT,
+            `customer_id` INT(11) NOT NULL,
+            `employee_id` INT(11) NOT NULL,
+            `entry_date` DATE NOT NULL,
+            `hours_billable` DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+            `hours_nonbillable` DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+            `raw_payload` LONGTEXT DEFAULT NULL,
+            `inserted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`entry_id`),
+            UNIQUE KEY `uk_cust_emp_date` (`customer_id`, `employee_id`, `entry_date`),
+            KEY `idx_entry_date` (`entry_date`),
+            CONSTRAINT `msp_fact_hours_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer`(`customer_id`) ON DELETE CASCADE,
+            CONSTRAINT `msp_fact_hours_ibfk_2` FOREIGN KEY (`employee_id`) REFERENCES `msp_dim_employee`(`employee_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `msp_fact_tickets_daily` (
+            `snapshot_id` BIGINT(20) NOT NULL AUTO_INCREMENT,
+            `customer_id` INT(11) NOT NULL,
+            `entry_date` DATE NOT NULL,
+            `tickets_created` INT(11) NOT NULL DEFAULT 0,
+            `tickets_resolved` INT(11) NOT NULL DEFAULT 0,
+            `tickets_open_at_eod` INT(11) NOT NULL DEFAULT 0,
+            `csat_avg` DECIMAL(4,2) DEFAULT NULL,
+            `raw_payload` LONGTEXT DEFAULT NULL,
+            `inserted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`snapshot_id`),
+            UNIQUE KEY `uk_cust_date` (`customer_id`, `entry_date`),
+            KEY `idx_entry_date` (`entry_date`),
+            CONSTRAINT `msp_fact_tickets_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer`(`customer_id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+
+        // Module flag + per-source config. Re-running the migration is
+        // idempotent: skip if the column already exists.
+        $check = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name   = 'settings'
+               AND column_name  = 'config_module_enable_msp_metrics'"));
+        if (!$check || intval($check['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `settings`
+                ADD COLUMN `config_module_enable_msp_metrics` TINYINT(1) NOT NULL DEFAULT 0,
+                ADD COLUMN `config_msp_wefact_api_key` VARCHAR(255) DEFAULT NULL,
+                ADD COLUMN `config_msp_wefact_api_url` VARCHAR(255) DEFAULT 'https://api.mijnwefact.nl/v2/',
+                ADD COLUMN `config_msp_timeon_api_key` VARCHAR(255) DEFAULT NULL,
+                ADD COLUMN `config_msp_timeon_api_url` VARCHAR(255) DEFAULT 'https://api.timeon.nl/',
+                ADD COLUMN `config_msp_freshdesk_api_key` VARCHAR(255) DEFAULT NULL,
+                ADD COLUMN `config_msp_freshdesk_domain` VARCHAR(255) DEFAULT NULL,
+                ADD COLUMN `config_msp_last_sync_wefact_at` DATETIME DEFAULT NULL,
+                ADD COLUMN `config_msp_last_sync_timeon_at` DATETIME DEFAULT NULL,
+                ADD COLUMN `config_msp_last_sync_freshdesk_at` DATETIME DEFAULT NULL");
+        }
+
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.19'");
+    }
+
+    // 2.4.4.19 -> 2.4.4.20: customer onboarding date for MSP metrics.
+    //
+    // dim_customer.created_at tracks when our sync first saw the debtor
+    // (useful going forward, but uniform "today" for every existing row
+    // on day 1). For accurate onboarding history we ask WeFact for the
+    // earliest invoice per debtor and store it here. Backfilled by the
+    // WeFact sync job — see cron/msp_sync_wefact.php.
+    if ($current_db_version == '2.4.4.19') {
+        $check = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name   = 'msp_dim_customer'
+               AND column_name  = 'first_invoice_at'"));
+        if (!$check || intval($check['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer`
+                ADD COLUMN `first_invoice_at` DATE DEFAULT NULL,
+                ADD KEY `idx_first_invoice` (`first_invoice_at`)");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.20'");
+    }
+
+    // 2.4.4.20 -> 2.4.4.21: replace first_invoice_at with wefact_created_at.
+    //
+    // first_invoice_at was a flawed proxy for onboarding date: customers
+    // on quarterly/yearly billing show their first WeFact invoice many
+    // months after they actually became customers, polluting the "new
+    // customers per month" cohort. WeFact's debtor.Created field is the
+    // authoritative onboarding-in-WeFact date and is now used instead.
+    // (Pre-migration customers all share the migration date, which is
+    // semantically correct: that's when they entered the system.)
+    if ($current_db_version == '2.4.4.20') {
+        $check_old = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'msp_dim_customer'
+               AND column_name = 'first_invoice_at'"));
+        if ($check_old && intval($check_old['n']) > 0) {
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer` DROP INDEX `idx_first_invoice`");
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer` DROP COLUMN `first_invoice_at`");
+        }
+        $check_new = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'msp_dim_customer'
+               AND column_name = 'wefact_created_at'"));
+        if (!$check_new || intval($check_new['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer`
+                ADD COLUMN `wefact_created_at` DATETIME DEFAULT NULL,
+                ADD KEY `idx_wefact_created` (`wefact_created_at`)");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.21'");
+    }
+
+    // 2.4.4.21 -> 2.4.4.22: customer transfer relations.
+    //
+    // Records the real-world event where one debtor's relationship moved
+    // to another debtor (split-off subsidiary, holding restructure,
+    // merger). Without this, a transferred contract shows as churn on
+    // the source + new growth on the target, distorting both ends of the
+    // MRR delta. The cohort chart filters transferred rows out so they
+    // don't pollute "new customers per month".
+    if ($current_db_version == '2.4.4.21') {
+        $check = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'msp_dim_customer'
+               AND column_name = 'transferred_from_customer_id'"));
+        if (!$check || intval($check['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer`
+                ADD COLUMN `transferred_from_customer_id` INT(11) DEFAULT NULL,
+                ADD COLUMN `transferred_at` DATE DEFAULT NULL,
+                ADD COLUMN `transfer_notes` TEXT DEFAULT NULL,
+                ADD KEY `idx_transferred_from` (`transferred_from_customer_id`)");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.22'");
+    }
+
+    // 2.4.4.22 -> 2.4.4.23: include historical customers in dim_customer.
+    //
+    // Subscription/list only sees debtors with currently active subs. When
+    // a contract moves (Zo Kinderopvang → Kiekeboe), the source loses all
+    // active subs and disappears from our dim table — so the transfer
+    // dropdown can't find them. We now also pull debtors with at least
+    // one invoice (= historical real customer) and mark currently-active
+    // ones with this flag. Dashboard "current customer" views filter on
+    // has_active_subscription = 1; cohort & transfer dropdown see all.
+    if ($current_db_version == '2.4.4.22') {
+        $check = mysqli_fetch_assoc(mysqli_query($mysqli,
+            "SELECT COUNT(*) AS n FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = 'msp_dim_customer'
+               AND column_name = 'has_active_subscription'"));
+        if (!$check || intval($check['n']) === 0) {
+            mysqli_query($mysqli, "ALTER TABLE `msp_dim_customer`
+                ADD COLUMN `has_active_subscription` TINYINT(1) NOT NULL DEFAULT 0,
+                ADD KEY `idx_has_active_sub` (`has_active_subscription`)");
+            // Existing rows all came in via subscription/list -> mark active.
+            mysqli_query($mysqli, "UPDATE `msp_dim_customer` SET has_active_subscription = 1");
+        }
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.23'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

@@ -105,7 +105,19 @@ $config_invoice_overdue_reminders = intval($row['config_invoice_overdue_reminder
 $config_module_enable_itdoc = intval($row['config_module_enable_itdoc']);
 $config_module_enable_ticketing = intval($row['config_module_enable_ticketing']);
 $config_module_enable_accounting = intval($row['config_module_enable_accounting']);
+$config_module_enable_msp_metrics = isset($row['config_module_enable_msp_metrics']) ? intval($row['config_module_enable_msp_metrics']) : 0;
 $config_client_portal_enable = intval($row['config_client_portal_enable']);
+
+// MSP metrics — API config (columns may not exist mid-upgrade, hence ?? null)
+$config_msp_wefact_api_key       = $row['config_msp_wefact_api_key']       ?? null;
+$config_msp_wefact_api_url       = $row['config_msp_wefact_api_url']       ?? 'https://api.mijnwefact.nl/v2/';
+$config_msp_timeon_api_key       = $row['config_msp_timeon_api_key']       ?? null;
+$config_msp_timeon_api_url       = $row['config_msp_timeon_api_url']       ?? 'https://api.timeon.nl/';
+$config_msp_freshdesk_api_key    = $row['config_msp_freshdesk_api_key']    ?? null;
+$config_msp_freshdesk_domain     = $row['config_msp_freshdesk_domain']     ?? null;
+$config_msp_last_sync_wefact_at  = $row['config_msp_last_sync_wefact_at']  ?? null;
+$config_msp_last_sync_timeon_at  = $row['config_msp_last_sync_timeon_at']  ?? null;
+$config_msp_last_sync_freshdesk_at = $row['config_msp_last_sync_freshdesk_at'] ?? null;
 
 // Login
 $config_login_message = $row['config_login_message'];

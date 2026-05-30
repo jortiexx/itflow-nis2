@@ -199,6 +199,15 @@
                     </li>
                 <?php } ?>
 
+                <?php if ($config_module_enable_msp_metrics && lookupUserPermission("module_reporting") >= 1) { ?>
+                    <li class="nav-item">
+                        <a href="/agent/msp_metrics.php" class="nav-link <?php if (basename($_SERVER['PHP_SELF']) == 'msp_metrics.php') { echo 'active'; } ?>">
+                            <i class="fas fa-chart-pie nav-icon"></i>
+                            <p>MSP Metrics</p>
+                        </a>
+                    </li>
+                <?php } ?>
+
                 <?php
                 $sql_custom_links = mysqli_query($mysqli, "SELECT * FROM custom_links WHERE custom_link_location = 1 AND custom_link_archived_at IS NULL
                     ORDER BY custom_link_order ASC, custom_link_name ASC"

@@ -1845,6 +1845,116 @@ CREATE TABLE `asset_port_trunk_vlans` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
+-- Table structure for table `msp_dim_customer`
+--
+
+DROP TABLE IF EXISTS `msp_dim_customer`;
+CREATE TABLE `msp_dim_customer` (
+  `customer_id` int(11) NOT NULL AUTO_INCREMENT,
+  `customer_name` varchar(255) NOT NULL,
+  `source_wefact_debtor_id` varchar(64) DEFAULT NULL,
+  `source_timeon_customer_id` varchar(64) DEFAULT NULL,
+  `source_freshdesk_company_id` varchar(64) DEFAULT NULL,
+  `itflow_client_id` int(11) DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `wefact_created_at` datetime DEFAULT NULL,
+  `transferred_from_customer_id` int(11) DEFAULT NULL,
+  `transferred_at` date DEFAULT NULL,
+  `transfer_notes` text DEFAULT NULL,
+  `has_active_subscription` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  PRIMARY KEY (`customer_id`),
+  UNIQUE KEY `uk_wefact` (`source_wefact_debtor_id`),
+  KEY `idx_timeon` (`source_timeon_customer_id`),
+  KEY `idx_freshdesk` (`source_freshdesk_company_id`),
+  KEY `idx_itflow_client` (`itflow_client_id`),
+  KEY `idx_wefact_created` (`wefact_created_at`),
+  KEY `idx_transferred_from` (`transferred_from_customer_id`),
+  KEY `idx_has_active_sub` (`has_active_subscription`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `msp_dim_employee`
+--
+
+DROP TABLE IF EXISTS `msp_dim_employee`;
+CREATE TABLE `msp_dim_employee` (
+  `employee_id` int(11) NOT NULL AUTO_INCREMENT,
+  `employee_name` varchar(255) NOT NULL,
+  `source_timeon_user_id` varchar(64) DEFAULT NULL,
+  `is_active` tinyint(1) NOT NULL DEFAULT 1,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  PRIMARY KEY (`employee_id`),
+  UNIQUE KEY `uk_timeon_user` (`source_timeon_user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `msp_fact_subscription_snapshot`
+--
+
+DROP TABLE IF EXISTS `msp_fact_subscription_snapshot`;
+CREATE TABLE `msp_fact_subscription_snapshot` (
+  `snapshot_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `customer_id` int(11) NOT NULL,
+  `snapshot_date` date NOT NULL,
+  `mrr_eur` decimal(12,2) NOT NULL DEFAULT 0.00,
+  `workplaces_count` int(11) NOT NULL DEFAULT 0,
+  `subscription_count` int(11) NOT NULL DEFAULT 0,
+  `raw_payload` longtext DEFAULT NULL,
+  `inserted_at` datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`snapshot_id`),
+  UNIQUE KEY `uk_customer_date` (`customer_id`,`snapshot_date`),
+  KEY `idx_snapshot_date` (`snapshot_date`),
+  CONSTRAINT `msp_fact_sub_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer` (`customer_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `msp_fact_hours_daily`
+--
+
+DROP TABLE IF EXISTS `msp_fact_hours_daily`;
+CREATE TABLE `msp_fact_hours_daily` (
+  `entry_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `customer_id` int(11) NOT NULL,
+  `employee_id` int(11) NOT NULL,
+  `entry_date` date NOT NULL,
+  `hours_billable` decimal(6,2) NOT NULL DEFAULT 0.00,
+  `hours_nonbillable` decimal(6,2) NOT NULL DEFAULT 0.00,
+  `raw_payload` longtext DEFAULT NULL,
+  `inserted_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  PRIMARY KEY (`entry_id`),
+  UNIQUE KEY `uk_cust_emp_date` (`customer_id`,`employee_id`,`entry_date`),
+  KEY `idx_entry_date` (`entry_date`),
+  CONSTRAINT `msp_fact_hours_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer` (`customer_id`) ON DELETE CASCADE,
+  CONSTRAINT `msp_fact_hours_ibfk_2` FOREIGN KEY (`employee_id`) REFERENCES `msp_dim_employee` (`employee_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Table structure for table `msp_fact_tickets_daily`
+--
+
+DROP TABLE IF EXISTS `msp_fact_tickets_daily`;
+CREATE TABLE `msp_fact_tickets_daily` (
+  `snapshot_id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `customer_id` int(11) NOT NULL,
+  `entry_date` date NOT NULL,
+  `tickets_created` int(11) NOT NULL DEFAULT 0,
+  `tickets_resolved` int(11) NOT NULL DEFAULT 0,
+  `tickets_open_at_eod` int(11) NOT NULL DEFAULT 0,
+  `csat_avg` decimal(4,2) DEFAULT NULL,
+  `raw_payload` longtext DEFAULT NULL,
+  `inserted_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  PRIMARY KEY (`snapshot_id`),
+  UNIQUE KEY `uk_cust_date` (`customer_id`,`entry_date`),
+  KEY `idx_entry_date` (`entry_date`),
+  CONSTRAINT `msp_fact_tickets_ibfk_1` FOREIGN KEY (`customer_id`) REFERENCES `msp_dim_customer` (`customer_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
 -- Table structure for table `records`
 --
 
@@ -2474,6 +2584,16 @@ CREATE TABLE `settings` (
   `config_ticket_default_view` tinyint(1) NOT NULL DEFAULT 0,
   `config_ticket_ordering` tinyint(1) NOT NULL DEFAULT 0,
   `config_ticket_moving_columns` tinyint(1) NOT NULL DEFAULT 1,
+  `config_module_enable_msp_metrics` tinyint(1) NOT NULL DEFAULT 0,
+  `config_msp_wefact_api_key` varchar(255) DEFAULT NULL,
+  `config_msp_wefact_api_url` varchar(255) DEFAULT 'https://api.mijnwefact.nl/v2/',
+  `config_msp_timeon_api_key` varchar(255) DEFAULT NULL,
+  `config_msp_timeon_api_url` varchar(255) DEFAULT 'https://api.timeon.nl/',
+  `config_msp_freshdesk_api_key` varchar(255) DEFAULT NULL,
+  `config_msp_freshdesk_domain` varchar(255) DEFAULT NULL,
+  `config_msp_last_sync_wefact_at` datetime DEFAULT NULL,
+  `config_msp_last_sync_timeon_at` datetime DEFAULT NULL,
+  `config_msp_last_sync_freshdesk_at` datetime DEFAULT NULL,
   PRIMARY KEY (`company_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

@@ -296,6 +296,12 @@
                                 <p>Modules</p>
                             </a>
                         </li>
+                        <li class="nav-item">
+                            <a href="/admin/msp_metrics_settings.php" class="nav-link <?php echo (basename($_SERVER['PHP_SELF']) == 'msp_metrics_settings.php' ? 'active' : ''); ?>">
+                                <i class="nav-icon fas fa-chart-line"></i>
+                                <p>MSP Metrics</p>
+                            </a>
+                        </li>
                     </ul>
                 </li>
 
