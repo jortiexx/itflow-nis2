@@ -72,20 +72,53 @@ while ($r = mysqli_fetch_assoc($trend)) {
 
 // All customers for the table. LEFT JOIN to the predecessor row so we can
 // render an "↶ from X" marker, and to the successor (this customer is the
-// "transferred_from" of another) so we can show "→ to Y".
+// "transferred_from" of another) so we can show "→ to Y". Also sum
+// billable hours from the last 30 days so support-load and €/uur appear.
 $all = mysqli_query($mysqli,
     "SELECT c.customer_id, c.customer_name, c.itflow_client_id,
             c.transferred_from_customer_id, c.transferred_at,
             pred.customer_name AS pred_name,
             succ.customer_id   AS succ_id,
             succ.customer_name AS succ_name,
-            s.mrr_eur, s.workplaces_count, s.subscription_count
+            s.mrr_eur, s.workplaces_count, s.subscription_count,
+            (SELECT COALESCE(SUM(hours_billable), 0)
+                 FROM msp_fact_hours_daily
+                 WHERE customer_id = c.customer_id
+                   AND entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) AS hours_30d,
+            (SELECT COALESCE(SUM(tickets_created), 0)
+                 FROM msp_fact_tickets_daily
+                 WHERE customer_id = c.customer_id
+                   AND entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) AS tickets_30d
      FROM msp_fact_subscription_snapshot s
      JOIN msp_dim_customer c USING (customer_id)
      LEFT JOIN msp_dim_customer pred ON pred.customer_id = c.transferred_from_customer_id
      LEFT JOIN msp_dim_customer succ ON succ.transferred_from_customer_id = c.customer_id
      WHERE s.snapshot_date = '$latest_date'
      ORDER BY s.mrr_eur DESC");
+
+// Hours per employee (last 30 days), for a small panel.
+$emp_hours = mysqli_query($mysqli,
+    "SELECT e.employee_name,
+            SUM(h.hours_billable)    AS billable,
+            SUM(h.hours_nonbillable) AS nonbillable
+     FROM msp_fact_hours_daily h
+     JOIN msp_dim_employee e USING (employee_id)
+     WHERE h.entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+     GROUP BY e.employee_id
+     ORDER BY billable DESC");
+
+// Top 10 customers by hours (last 30 days), for the chart.
+$top_hours = mysqli_query($mysqli,
+    "SELECT c.customer_name, SUM(h.hours_billable) AS hours
+     FROM msp_fact_hours_daily h
+     JOIN msp_dim_customer c USING (customer_id)
+     WHERE h.entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+     GROUP BY c.customer_id ORDER BY hours DESC LIMIT 10");
+$top_hours_labels = []; $top_hours_data = [];
+while ($r = mysqli_fetch_assoc($top_hours)) {
+    $top_hours_labels[] = $r['customer_name'];
+    $top_hours_data[]   = floatval($r['hours']);
+}
 
 // ─── Growth: new customers per month + cumulative curve ───────────────
 // wefact_created_at = the date WeFact registered this debtor. Pre-migration
@@ -282,6 +315,35 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
     </div>
 </div>
 
+<!-- TimeOn hours: top customers + per employee -->
+<div class="row">
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-clock mr-2"></i>Top 10 klanten op uren (laatste 30 dgn)</h3></div>
+            <div class="card-body"><div style="position:relative;height:320px;"><canvas id="mspTopHours"></canvas></div></div>
+        </div>
+    </div>
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-user-clock mr-2"></i>Uren per medewerker (30 dgn)</h3></div>
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead><tr><th>Medewerker</th><th class="text-right">Billable</th><th class="text-right">Non-bill.</th></tr></thead>
+                    <tbody>
+                    <?php while ($e = mysqli_fetch_assoc($emp_hours)) { ?>
+                        <tr>
+                            <td><?= nullable_htmlentities($e['employee_name']) ?></td>
+                            <td class="text-right"><?= number_format(floatval($e['billable']), 1, ',', '.') ?> u</td>
+                            <td class="text-right text-muted"><?= number_format(floatval($e['nonbillable']), 1, ',', '.') ?> u</td>
+                        </tr>
+                    <?php } ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- All customers table -->
 <div class="card">
     <div class="card-header py-2">
@@ -294,7 +356,10 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
                 <th class="text-right">MRR</th>
                 <th class="text-right">Werkplekken</th>
                 <th class="text-right">Abos</th>
-                <th class="text-right">€ / werkplek</th>
+                <th class="text-right">€/wp</th>
+                <th class="text-right">Uren 30d</th>
+                <th class="text-right">€/uur</th>
+                <th class="text-right">Tickets 30d</th>
                 <th class="text-center">Actie</th>
             </tr></thead>
             <tbody>
@@ -317,10 +382,15 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
                             <div><small class="text-warning"><i class="fa fa-fw fa-arrow-right mr-1"></i>overgedragen aan <?= nullable_htmlentities($r['succ_name']) ?></small></div>
                         <?php } ?>
                     </td>
+                    <?php $hours = floatval($r['hours_30d']); $tickets = intval($r['tickets_30d']);
+                          $eff_rate = $hours > 0 ? $mrr / $hours : null; ?>
                     <td class="text-right">&euro;&nbsp;<?= number_format($mrr, 2, ',', '.') ?></td>
                     <td class="text-right"><?= $wp ?: '<span class="text-muted">–</span>' ?></td>
                     <td class="text-right"><?= intval($r['subscription_count']) ?></td>
                     <td class="text-right"><?= $per_wp !== null ? '&euro;&nbsp;' . number_format($per_wp, 0, ',', '.') : '<span class="text-muted">–</span>' ?></td>
+                    <td class="text-right"><?= $hours > 0 ? number_format($hours, 1, ',', '.') . '&nbsp;u' : '<span class="text-muted">–</span>' ?></td>
+                    <td class="text-right"><?= $eff_rate !== null ? '&euro;&nbsp;' . number_format($eff_rate, 0, ',', '.') : '<span class="text-muted">–</span>' ?></td>
+                    <td class="text-right"><?= $tickets > 0 ? $tickets : '<span class="text-muted">–</span>' ?></td>
                     <td class="text-center">
                         <div class="dropdown dropleft">
                             <button class="btn btn-sm btn-secondary" type="button" data-toggle="dropdown"><i class="fas fa-ellipsis-h"></i></button>
@@ -359,6 +429,19 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
             maintainAspectRatio: false,
             plugins: { legend: { display: false } },
             scales: { x: { ticks: { callback: v => '€ ' + v.toLocaleString('nl-NL') } } }
+        }
+    });
+
+    var hoursCtx = document.getElementById('mspTopHours');
+    if (hoursCtx) new Chart(hoursCtx, {
+        type: 'bar',
+        data: {
+            labels: <?= json_encode(array_map(fn($l) => mb_strimwidth($l, 0, 32, '…'), $top_hours_labels), JSON_UNESCAPED_UNICODE) ?>,
+            datasets: [{ label: 'Billable uren', data: <?= json_encode($top_hours_data) ?>, backgroundColor: '#fd7e14' }]
+        },
+        options: {
+            indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } },
+            scales: { x: { ticks: { callback: v => v + ' u' } } }
         }
     });
 

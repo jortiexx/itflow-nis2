@@ -157,6 +157,16 @@ function fmt_last_sync($v) {
         </form>
 
         <hr>
+        <h5>itflow client mapping</h5>
+        <p class="small text-muted">
+            Link MSP customer rows to their itflow client record (by fuzzy name match) so customer
+            names in the dashboard become clickable. Re-runnable; only fills empty links.
+        </p>
+        <form action="/cron/msp_link_itflow_clients.php" method="get">
+            <button type="submit" class="btn btn-secondary"><i class="fa fa-fw fa-link mr-2"></i>Run mapping now</button>
+        </form>
+
+        <hr>
         <h5>Cron schedule</h5>
         <p class="small text-muted mb-1">Add to root's crontab once on the server (see <code>cron/msp_sync_*.php</code>):</p>
         <pre class="small bg-light p-2 mb-0">
