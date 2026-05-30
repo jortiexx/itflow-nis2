@@ -74,9 +74,13 @@ function norm($name) {
     return $n;
 }
 
-// ─── Customers ────────────────────────────────────────────────────────
-// Pull all TimeOn customers; match to msp_dim_customer by name; backfill
-// source_timeon_customer_id where missing.
+// ─── Customers — index ALL but only persist what we need ─────────────
+// TimeOn keeps every customer record ever, including dupes/renamed/dead
+// ("(Gebruik X!)", "*niet gebruiken*"). 523 records but typically <50 are
+// actively in use. We index the full list so we can look up by ID when
+// processing hour entries, but only INSERT dim rows for customers that
+// either (a) already exist in msp_dim_customer (link them) or (b) have
+// hours logged in the lookback window (= really used).
 $all_customers = []; $page = 1;
 for ($i = 0; $i < 50; $i++) {
     try {
@@ -89,39 +93,69 @@ for ($i = 0; $i < 50; $i++) {
     $page++;
     usleep(150_000);
 }
-to_log('Fetched ' . count($all_customers) . ' TimeOn customers');
+to_log('Fetched ' . count($all_customers) . ' TimeOn customers (full universe)');
 
-// Existing dim by normalised name
-$msp_by_name = [];
-$res = mysqli_query($mysqli, "SELECT customer_id, customer_name FROM msp_dim_customer");
-while ($r = mysqli_fetch_assoc($res)) $msp_by_name[norm($r['customer_name'])] = intval($r['customer_id']);
+// Index by TimeOn ID — used during hour processing to know name + match later.
+$timeon_idx = [];
+foreach ($all_customers as $tc) $timeon_idx[intval($tc['customerID'])] = $tc;
 
-$timeon_to_msp = [];   // timeon customerID -> msp customer_id
-$linked = $created_dim = 0;
+// Existing dim by normalised name + by source_timeon_customer_id.
+$msp_by_name = []; $msp_by_timeon_id = [];
+$res = mysqli_query($mysqli, "SELECT customer_id, customer_name, source_timeon_customer_id FROM msp_dim_customer");
+while ($r = mysqli_fetch_assoc($res)) {
+    $msp_by_name[norm($r['customer_name'])] = intval($r['customer_id']);
+    if ($r['source_timeon_customer_id']) $msp_by_timeon_id[intval($r['source_timeon_customer_id'])] = intval($r['customer_id']);
+}
+
+// Backfill source_timeon_customer_id on existing rows that match by name.
+// Don't create stubs here — we'll create them lazily during hour processing
+// for customers that actually have hours.
+$linked = 0;
 foreach ($all_customers as $tc) {
     $name = trim($tc['name'] ?? '');
     if (!$name) continue;
     $cid = $msp_by_name[norm($name)] ?? null;
-    if (!$cid) {
-        // TimeOn-only customer (no WeFact subscription). Create stub so hours can be attributed.
-        $name_e = mysqli_real_escape_string($mysqli, $name);
-        mysqli_query($mysqli, "INSERT INTO msp_dim_customer
-            (customer_name, source_timeon_customer_id, has_active_subscription)
-            VALUES ('$name_e', '" . intval($tc['customerID']) . "', 0)");
-        $cid = mysqli_insert_id($mysqli);
-        $msp_by_name[norm($name)] = $cid;
-        $created_dim++;
-    } else {
-        // Backfill source_timeon_customer_id if missing.
-        $tcid = intval($tc['customerID']);
+    if (!$cid) continue;
+    $tcid = intval($tc['customerID']);
+    if (!isset($msp_by_timeon_id[$tcid])) {
         mysqli_query($mysqli, "UPDATE msp_dim_customer
             SET source_timeon_customer_id = '$tcid'
             WHERE customer_id = $cid AND source_timeon_customer_id IS NULL");
+        $msp_by_timeon_id[$tcid] = $cid;
         $linked++;
     }
-    $timeon_to_msp[intval($tc['customerID'])] = $cid;
 }
-to_log("Customer linkage: linked existing $linked, created stubs $created_dim");
+to_log("Customer linkage: $linked existing rows backfilled with TimeOn ID");
+
+// Helper: get-or-create msp dim row for a TimeOn customer that has hours.
+// Falls back to creating a stub for TimeOn-only customers, but ONLY when
+// we have evidence (hours) that they're real.
+$timeon_to_msp = $msp_by_timeon_id;   // start with existing links
+$created_dim = 0;
+$ensure_customer = function (int $tcid) use ($mysqli, $timeon_idx, &$msp_by_name, &$timeon_to_msp, &$created_dim) {
+    if (isset($timeon_to_msp[$tcid])) return $timeon_to_msp[$tcid];
+    $tc = $timeon_idx[$tcid] ?? null;
+    if (!$tc) return null;
+    $name = trim($tc['name'] ?? '');
+    if (!$name) return null;
+    $k = norm($name);
+    if (isset($msp_by_name[$k])) {
+        $cid = $msp_by_name[$k];
+        mysqli_query($mysqli, "UPDATE msp_dim_customer SET source_timeon_customer_id = '$tcid'
+            WHERE customer_id = $cid AND source_timeon_customer_id IS NULL");
+        $timeon_to_msp[$tcid] = $cid;
+        return $cid;
+    }
+    $name_e = mysqli_real_escape_string($mysqli, $name);
+    mysqli_query($mysqli, "INSERT INTO msp_dim_customer
+        (customer_name, source_timeon_customer_id, has_active_subscription)
+        VALUES ('$name_e', '$tcid', 0)");
+    $cid = mysqli_insert_id($mysqli);
+    $msp_by_name[$k] = $cid;
+    $timeon_to_msp[$tcid] = $cid;
+    $created_dim++;
+    return $cid;
+};
 
 // ─── Users (employees) ───────────────────────────────────────────────
 // /api/user/search returns the org's users.
@@ -163,7 +197,7 @@ foreach (($hr['groups'] ?? []) as $day_group) {
     foreach (($day_group['hourList'] ?? []) as $h) {
         $tcid = intval($h['customerID'] ?? 0);
         $tuid = intval($h['userID']     ?? 0);
-        $cid  = $timeon_to_msp[$tcid] ?? null;
+        $cid  = $tcid > 0 ? $ensure_customer($tcid) : null;
         $eid  = $timeon_user_to_emp[$tuid] ?? null;
         if (!$cid) { $no_cust++; continue; }
         if (!$eid) { $no_emp++;  continue; }
@@ -176,6 +210,7 @@ foreach (($hr['groups'] ?? []) as $day_group) {
     }
 }
 to_log("Aggregated " . count($agg) . " (customer,employee,date) tuples — skipped no-customer: $no_cust, no-employee: $no_emp");
+to_log("Created stubs for $created_dim TimeOn customers with hours that weren't in dim yet");
 
 // Wipe the lookback window before re-write so rule changes propagate.
 $from_date = date('Y-m-d', strtotime("-$LOOKBACK_DAYS days"));
