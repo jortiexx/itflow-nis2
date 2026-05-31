@@ -1,5 +1,6 @@
 <?php
 require_once "includes/inc_all.php";
+require_once "includes/msp_date_range.php";
 
 if (!$config_module_enable_msp_metrics) {
     flash_alert('MSP Metrics module is disabled.', 'error');
@@ -7,12 +8,21 @@ if (!$config_module_enable_msp_metrics) {
 }
 enforceUserPermission('module_reporting');
 
-// ─── Latest snapshot date per customer ────────────────────────────────
-// We want the most-recent snapshot per customer for the headline numbers,
-// not a sum across all snapshot dates.
-$latest = mysqli_fetch_assoc(mysqli_query($mysqli,
-    "SELECT MAX(snapshot_date) AS d FROM msp_fact_subscription_snapshot"));
-$latest_date = $latest['d'];
+[$preset, $from, $to] = msp_parse_date_range();
+$from_e = mysqli_real_escape_string($mysqli, $from);
+$to_e   = mysqli_real_escape_string($mysqli, $to);
+
+// As-of snapshot: most recent snapshot <= chosen end-of-range. Falls back
+// to latest available if no snapshot exists in range yet.
+$as_of_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+    "SELECT MAX(snapshot_date) AS d FROM msp_fact_subscription_snapshot WHERE snapshot_date <= '$to_e'"));
+$as_of_date = $as_of_row['d'] ?: null;
+if (!$as_of_date) {
+    $latest_row = mysqli_fetch_assoc(mysqli_query($mysqli,
+        "SELECT MAX(snapshot_date) AS d FROM msp_fact_subscription_snapshot"));
+    $as_of_date = $latest_row['d'];
+}
+$latest_date = $as_of_date;   // alias used further down
 
 if (!$latest_date) {
     ?>
@@ -53,13 +63,14 @@ while ($r = mysqli_fetch_assoc($top)) {
     $top_workplaces[] = intval($r['workplaces_count']);
 }
 
-// MRR trend across all snapshot dates (one row per date).
+// MRR trend within the chosen range.
 $trend = mysqli_query($mysqli,
     "SELECT snapshot_date,
             SUM(mrr_eur)          AS mrr_sum,
             SUM(workplaces_count) AS wp_sum,
             COUNT(*)              AS cust_count
      FROM msp_fact_subscription_snapshot
+     WHERE snapshot_date BETWEEN '$from_e' AND '$to_e'
      GROUP BY snapshot_date
      ORDER BY snapshot_date");
 $trend_labels = []; $trend_mrr = []; $trend_wp = []; $trend_cust = [];
@@ -84,11 +95,11 @@ $all = mysqli_query($mysqli,
             (SELECT COALESCE(SUM(hours_billable), 0)
                  FROM msp_fact_hours_daily
                  WHERE customer_id = c.customer_id
-                   AND entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) AS hours_30d,
+                   AND entry_date BETWEEN '$from_e' AND '$to_e') AS hours_in_range,
             (SELECT COALESCE(SUM(tickets_created), 0)
                  FROM msp_fact_tickets_daily
                  WHERE customer_id = c.customer_id
-                   AND entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)) AS tickets_30d
+                   AND entry_date BETWEEN '$from_e' AND '$to_e') AS tickets_in_range
      FROM msp_fact_subscription_snapshot s
      JOIN msp_dim_customer c USING (customer_id)
      LEFT JOIN msp_dim_customer pred ON pred.customer_id = c.transferred_from_customer_id
@@ -96,23 +107,23 @@ $all = mysqli_query($mysqli,
      WHERE s.snapshot_date = '$latest_date'
      ORDER BY s.mrr_eur DESC");
 
-// Hours per employee (last 30 days), for a small panel.
+// Hours per employee in the range, for a small panel.
 $emp_hours = mysqli_query($mysqli,
-    "SELECT e.employee_name,
+    "SELECT e.employee_id, e.employee_name,
             SUM(h.hours_billable)    AS billable,
             SUM(h.hours_nonbillable) AS nonbillable
      FROM msp_fact_hours_daily h
      JOIN msp_dim_employee e USING (employee_id)
-     WHERE h.entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+     WHERE h.entry_date BETWEEN '$from_e' AND '$to_e'
      GROUP BY e.employee_id
      ORDER BY billable DESC");
 
-// Top 10 customers by hours (last 30 days), for the chart.
+// Top 10 customers by hours in the range, for the chart.
 $top_hours = mysqli_query($mysqli,
     "SELECT c.customer_name, SUM(h.hours_billable) AS hours
      FROM msp_fact_hours_daily h
      JOIN msp_dim_customer c USING (customer_id)
-     WHERE h.entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+     WHERE h.entry_date BETWEEN '$from_e' AND '$to_e'
      GROUP BY c.customer_id ORDER BY hours DESC LIMIT 10");
 $top_hours_labels = []; $top_hours_data = [];
 while ($r = mysqli_fetch_assoc($top_hours)) {
@@ -134,6 +145,7 @@ $cohort = mysqli_query($mysqli,
             SUM(transferred_from_customer_id IS NOT NULL) AS transferred_in
      FROM msp_dim_customer
      WHERE wefact_created_at IS NOT NULL
+       AND DATE(wefact_created_at) BETWEEN '$from_e' AND '$to_e'
      GROUP BY month ORDER BY month");
 $cohort_labels = []; $cohort_new = []; $cohort_cum = []; $cohort_transferred = [];
 $running = 0;
@@ -173,10 +185,10 @@ function snapshot_totals_on_or_before($mysqli, $date) {
          )"));
     return $r && $r['snapshot_date'] ? $r : null;
 }
-$today_totals    = snapshot_totals_on_or_before($mysqli, $latest_date);
-$d7_totals       = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$latest_date -7 days")));
-$d30_totals      = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$latest_date -30 days")));
-$d365_totals     = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$latest_date -365 days")));
+$today_totals    = snapshot_totals_on_or_before($mysqli, $to);
+$d7_totals       = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$to -7 days")));
+$d30_totals      = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$to -30 days")));
+$d365_totals     = snapshot_totals_on_or_before($mysqli, date('Y-m-d', strtotime("$to -365 days")));
 
 function delta_line($label, $now, $then) {
     if (!$then || $then['snapshot_date'] === $now['snapshot_date']) {
@@ -198,6 +210,8 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
     "SELECT config_msp_last_sync_wefact_at, config_msp_last_sync_timeon_at, config_msp_last_sync_freshdesk_at
      FROM settings WHERE company_id = 1 LIMIT 1"));
 ?>
+
+<?= msp_filter_form($preset, $from, $to, '/agent/msp_metrics.php') ?>
 
 <!-- KPI tiles -->
 <div class="row">
@@ -319,20 +333,22 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
 <div class="row">
     <div class="col-md-7">
         <div class="card">
-            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-clock mr-2"></i>Top 10 klanten op uren (laatste 30 dgn)</h3></div>
+            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-clock mr-2"></i>Top 10 klanten op uren (<?= htmlentities("$from t/m $to") ?>)</h3></div>
             <div class="card-body"><div style="position:relative;height:320px;"><canvas id="mspTopHours"></canvas></div></div>
         </div>
     </div>
     <div class="col-md-5">
         <div class="card">
-            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-user-clock mr-2"></i>Uren per medewerker (30 dgn)</h3></div>
+            <div class="card-header py-2"><h3 class="card-title mt-2"><i class="fas fa-fw fa-user-clock mr-2"></i>Uren per medewerker (<?= htmlentities("$from t/m $to") ?>)</h3></div>
             <div class="card-body p-0">
                 <table class="table table-striped mb-0">
                     <thead><tr><th>Medewerker</th><th class="text-right">Billable</th><th class="text-right">Non-bill.</th></tr></thead>
                     <tbody>
-                    <?php while ($e = mysqli_fetch_assoc($emp_hours)) { ?>
+                    <?php while ($e = mysqli_fetch_assoc($emp_hours)) {
+                        $eid = intval($e['employee_id']);
+                        $emp_qs = http_build_query(['id' => $eid, 'preset' => $preset, 'from' => $from, 'to' => $to]); ?>
                         <tr>
-                            <td><?= nullable_htmlentities($e['employee_name']) ?></td>
+                            <td><a href="/agent/msp_metrics_employee.php?<?= $emp_qs ?>"><?= nullable_htmlentities($e['employee_name']) ?></a></td>
                             <td class="text-right"><?= number_format(floatval($e['billable']), 1, ',', '.') ?> u</td>
                             <td class="text-right text-muted"><?= number_format(floatval($e['nonbillable']), 1, ',', '.') ?> u</td>
                         </tr>
@@ -357,9 +373,9 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
                 <th class="text-right">Werkplekken</th>
                 <th class="text-right">Abos</th>
                 <th class="text-right">€/wp</th>
-                <th class="text-right">Uren 30d</th>
+                <th class="text-right">Uren</th>
                 <th class="text-right">€/uur</th>
-                <th class="text-right">Tickets 30d</th>
+                <th class="text-right">Tickets</th>
                 <th class="text-center">Actie</th>
             </tr></thead>
             <tbody>
@@ -382,7 +398,7 @@ $cfg = mysqli_fetch_assoc(mysqli_query($mysqli,
                             <div><small class="text-warning"><i class="fa fa-fw fa-arrow-right mr-1"></i>overgedragen aan <?= nullable_htmlentities($r['succ_name']) ?></small></div>
                         <?php } ?>
                     </td>
-                    <?php $hours = floatval($r['hours_30d']); $tickets = intval($r['tickets_30d']);
+                    <?php $hours = floatval($r['hours_in_range']); $tickets = intval($r['tickets_in_range']);
                           $eff_rate = $hours > 0 ? $mrr / $hours : null; ?>
                     <td class="text-right">&euro;&nbsp;<?= number_format($mrr, 2, ',', '.') ?></td>
                     <td class="text-right"><?= $wp ?: '<span class="text-muted">–</span>' ?></td>
