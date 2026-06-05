@@ -5148,6 +5148,19 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.23'");
     }
 
+    // 2.4.4.23 -> 2.4.4.24: widen credential_otp_secret to TEXT.
+    //
+    // Phase 12 started encrypting the TOTP seed (v3 ciphertext: prefix +
+    // base64 of salt/nonce/tag/ciphertext), so long seeds blow past the
+    // old VARCHAR(200) limit. mysqli strict mode turns the resulting
+    // "Data too long" into an uncaught exception -> 500 on agent/post.php.
+    // Match credential_note, which is already TEXT.
+    if ($current_db_version == '2.4.4.23') {
+        mysqli_query($mysqli, "ALTER TABLE `credentials`
+            MODIFY COLUMN `credential_otp_secret` TEXT DEFAULT NULL");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.24'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite
