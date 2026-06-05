@@ -66,37 +66,27 @@ class Base32Static {
     public static function decode($input) {
         if (empty($input)) return;
 
-        $paddingCharCount = substr_count($input, self::$map[32]);
-        $allowedValues = array(6,4,3,1,0);
-
-        if (!in_array($paddingCharCount, $allowedValues)) return false;
-
-        for ($i=0; $i<4; $i++){
-            if ($paddingCharCount == $allowedValues[$i] &&
-                substr($input, -($allowedValues[$i])) != str_repeat(self::$map[32], $allowedValues[$i])) return false;
-        }
-
-        $input = str_replace('=', '', $input);
-        $input = str_split($input);
+        // RFC 4648: map each character to 5 bits, then emit complete bytes.
+        // The previous implementation walked the input in fixed chunks of 8
+        // characters and treated missing characters in the final chunk as
+        // zero bits, appending garbage bytes to the key whenever the secret
+        // length was not a multiple of 8 (long TOTP seeds) - which made the
+        // derived HMAC key, and thus every generated code, wrong.
+        $input = str_replace(array('=', ' '), '', strtoupper($input));
         $binaryString = "";
 
-        for ($i=0; $i < count($input); $i = $i+8) {
-            $x = "";
-
-            if (!in_array($input[$i], self::$map)) return false;
-
-            for ($j=0; $j < 8; $j++) {
-                $x .= str_pad(base_convert(@self::$flippedMap[@$input[$i + $j]], 10, 2), 5, '0', STR_PAD_LEFT);
-            }
-
-            $eightBits = str_split($x, 8);
-
-            for ($z = 0; $z < count($eightBits); $z++) {
-                $binaryString .= (($y = chr(base_convert($eightBits[$z], 2, 10))) || ord($y) == 48) ? $y:"";
-            }
+        foreach (str_split($input) as $char) {
+            if (!isset(self::$flippedMap[$char])) return false;
+            $binaryString .= str_pad(decbin((int) self::$flippedMap[$char]), 5, '0', STR_PAD_LEFT);
         }
 
-        return $binaryString;
+        $output = "";
+        foreach (str_split($binaryString, 8) as $byte) {
+            // Trailing bits that don't fill a byte are padding - drop them.
+            if (strlen($byte) === 8) $output .= chr(bindec($byte));
+        }
+
+        return $output;
     }
 }
 
