@@ -5184,6 +5184,13 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.25'");
     }
 
+    // 2.4.4.25 -> 2.4.4.26: index logs by client. The client overview's
+    // "recent activity" query did a full scan of logs (millions of rows).
+    if ($current_db_version == '2.4.4.25') {
+        mysqli_query($mysqli, "ALTER TABLE `logs` ADD INDEX IF NOT EXISTS `idx_logs_client_created` (`log_client_id`, `log_created_at`), ALGORITHM=INPLACE, LOCK=NONE");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.26'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

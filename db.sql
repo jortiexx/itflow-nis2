@@ -1435,7 +1435,8 @@ CREATE TABLE `logs` (
   `log_user_id` int(11) NOT NULL DEFAULT 0,
   `log_entity_id` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`log_id`),
-  KEY `idx_logs_ratelimit` (`log_type`,`log_action`,`log_ip`,`log_created_at`)
+  KEY `idx_logs_ratelimit` (`log_type`,`log_action`,`log_ip`,`log_created_at`),
+  KEY `idx_logs_client_created` (`log_client_id`,`log_created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
