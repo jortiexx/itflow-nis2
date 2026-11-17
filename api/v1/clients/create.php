@@ -20,7 +20,10 @@ if (!empty($name) && $client_id == 0) {
     // Check insert & get insert ID
     if ($insert_sql) {
         $insert_id = mysqli_insert_id($mysqli);
-        
+
+        // Primary legal entity defaults to the client name, same as the agent UI
+        mysqli_query($mysqli, "INSERT INTO client_entities SET entity_client_id = $insert_id, entity_name = '$name', entity_primary = 1");
+
         // Logging
         logAction("Client", "Create", "$name via API ($api_key_name)", $insert_id);
         logAction("API", "Success", "Created client $name via API ($api_key_name)", $insert_id);
