@@ -411,6 +411,168 @@ if (isset($_POST['bulk_delete_credentials'])) {
 
 }
 
+if (isset($_POST['bulk_move_credentials'])) {
+
+    validateCSRFToken($_POST['csrf_token']);
+
+    enforceUserPermission('module_credential', 2);
+
+    // Every secret field gets decrypted and re-encrypted: ask for a recent unlock
+    requireFreshVaultUnlock();
+
+    $target_client_id = intval($_POST['target_client_id'] ?? 0);
+    $client_id = $target_client_id;
+    enforceClientAccess();
+
+    $row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT client_name FROM clients WHERE client_id = $target_client_id AND client_archived_at IS NULL"));
+    if (!$row || empty($_POST['credential_ids'])) {
+        flash_alert("Select one or more credentials and an active target client", 'error');
+        redirect();
+    }
+    $target_client_name = sanitizeInput($row['client_name']);
+
+    // username/password are always stored encrypted (v1, v2 or v3);
+    // otp_secret/note can still be legacy plaintext from before phase 12
+    $secret_fields = [
+        'credential_username' => true,
+        'credential_password' => true,
+        'credential_otp_secret' => false,
+        'credential_note' => false
+    ];
+
+    $moved = 0;
+    $errors = [];
+
+    foreach ($_POST['credential_ids'] as $credential_id) {
+
+        $credential_id = intval($credential_id);
+        $credential = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT * FROM credentials WHERE credential_id = $credential_id"));
+        if (!$credential) {
+            continue;
+        }
+
+        $client_id = intval($credential['credential_client_id']);
+        enforceClientAccess();
+        $source_client_id = $client_id;
+        $credential_name = sanitizeInput($credential['credential_name']);
+
+        if ($source_client_id === $target_client_id) {
+            continue;
+        }
+
+        // A share link holds its own copy of the secret; don't move it silently
+        $share = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT item_id FROM shared_items WHERE item_type IN ('Credential', 'Login') AND item_related_id = $credential_id AND item_active = 1 LIMIT 1"));
+        if ($share) {
+            $errors[] = "$credential_name: has an active share link, revoke it first";
+            continue;
+        }
+
+        // Decrypt with the source client key, encrypt with the target client key,
+        // and prove the new ciphertext opens again before anything is written
+        $plain = [];
+        $cipher = [];
+        $error = '';
+        foreach ($secret_fields as $field => $always_encrypted) {
+            $stored = (string)($credential[$field] ?? '');
+            if ($stored === '') {
+                $plain[$field] = '';
+                $cipher[$field] = '';
+                continue;
+            }
+            if ($always_encrypted || isCredentialV2($stored) || isCredentialV3($stored)) {
+                $value = decryptCredentialEntry($stored, $source_client_id);
+                if ($value === false || $value === null) {
+                    $error = "cannot decrypt $field";
+                    break;
+                }
+            } else {
+                $value = $stored;
+            }
+            $new = encryptCredentialEntry($value, $target_client_id);
+            if (!is_string($new) || !isCredentialV3($new)) {
+                $error = "cannot encrypt $field with the target client key";
+                break;
+            }
+            if (decryptCredentialEntry($new, $target_client_id) !== $value) {
+                $error = "verification of $field failed";
+                break;
+            }
+            $plain[$field] = $value;
+            $cipher[$field] = $new;
+        }
+        if ($error === '' && (strlen($cipher['credential_password']) > 200 || strlen($cipher['credential_username']) > 500)) {
+            $error = 'encrypted value is longer than the column allows';
+        }
+        if ($error !== '') {
+            $errors[] = "$credential_name: $error";
+            unset($plain);
+            continue;
+        }
+
+        $username_e = mysqli_real_escape_string($mysqli, $cipher['credential_username']);
+        $password_e = mysqli_real_escape_string($mysqli, $cipher['credential_password']);
+        $otp_secret_e = mysqli_real_escape_string($mysqli, $cipher['credential_otp_secret']);
+        $note_e = mysqli_real_escape_string($mysqli, $cipher['credential_note']);
+
+        mysqli_begin_transaction($mysqli);
+        try {
+            mysqli_query($mysqli, "UPDATE credentials SET
+                credential_username = '$username_e',
+                credential_password = '$password_e',
+                credential_otp_secret = '$otp_secret_e',
+                credential_note = '$note_e',
+                credential_client_id = $target_client_id,
+                credential_asset_id = IF(credential_asset_id IN (SELECT asset_id FROM assets WHERE asset_client_id = $target_client_id), credential_asset_id, 0),
+                credential_contact_id = IF(credential_contact_id IN (SELECT contact_id FROM contacts WHERE contact_client_id = $target_client_id), credential_contact_id, 0),
+                credential_folder_id = IF(credential_folder_id IN (SELECT folder_id FROM folders WHERE folder_client_id = $target_client_id), credential_folder_id, 0)
+                WHERE credential_id = $credential_id AND credential_client_id = $source_client_id");
+            if (mysqli_affected_rows($mysqli) !== 1) {
+                throw new RuntimeException('credential changed while moving');
+            }
+
+            // Drop links to records that stay with the old client
+            mysqli_query($mysqli, "DELETE FROM asset_credentials WHERE credential_id = $credential_id AND asset_id NOT IN (SELECT asset_id FROM assets WHERE asset_client_id = $target_client_id)");
+            mysqli_query($mysqli, "DELETE FROM contact_credentials WHERE credential_id = $credential_id AND contact_id NOT IN (SELECT contact_id FROM contacts WHERE contact_client_id = $target_client_id)");
+            mysqli_query($mysqli, "DELETE FROM vendor_credentials WHERE credential_id = $credential_id AND vendor_id NOT IN (SELECT vendor_id FROM vendors WHERE vendor_client_id = $target_client_id)");
+            mysqli_query($mysqli, "DELETE FROM service_credentials WHERE credential_id = $credential_id AND service_id NOT IN (SELECT service_id FROM services WHERE service_client_id = $target_client_id)");
+            mysqli_query($mysqli, "DELETE FROM software_credentials WHERE credential_id = $credential_id AND software_id NOT IN (SELECT software_id FROM software WHERE software_client_id = $target_client_id)");
+
+            // Read back what was stored and make sure it still opens
+            $stored_row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT credential_username, credential_password, credential_otp_secret, credential_note FROM credentials WHERE credential_id = $credential_id"));
+            foreach ($secret_fields as $field => $always_encrypted) {
+                $readback_ok = $cipher[$field] === ''
+                    ? (string)$stored_row[$field] === ''
+                    : decryptCredentialEntry((string)$stored_row[$field], $target_client_id) === $plain[$field];
+                if (!$readback_ok) {
+                    throw new RuntimeException("read-back of $field failed");
+                }
+            }
+
+            mysqli_commit($mysqli);
+        } catch (Throwable $e) {
+            mysqli_rollback($mysqli);
+            $errors[] = "$credential_name: " . $e->getMessage() . " (not moved)";
+            unset($plain);
+            continue;
+        }
+        unset($plain);
+
+        $source_client_name = sanitizeInput(getFieldById('clients', $source_client_id, 'client_name'));
+        logAction("Credential", "Move", "$session_name moved credential $credential_name to client $target_client_name", $source_client_id, $credential_id);
+        logAction("Credential", "Move", "$session_name moved credential $credential_name from client $source_client_name", $target_client_id, $credential_id);
+        $moved++;
+    }
+
+    if ($errors) {
+        flash_alert("Moved <strong>$moved</strong> credential(s) to <strong>$target_client_name</strong>. Not moved:<br>" . implode('<br>', $errors), 'error');
+    } else {
+        flash_alert("Moved <strong>$moved</strong> credential(s) to <strong>$target_client_name</strong>");
+    }
+
+    redirect();
+
+}
+
 if (isset($_POST['export_credentials_csv'])) {
 
     validateCSRFToken($_POST['csrf_token']);

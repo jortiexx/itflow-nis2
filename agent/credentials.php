@@ -241,6 +241,14 @@ $num_rows = mysqli_fetch_row(mysqli_query($mysqli, "SELECT FOUND_ROWS()"));
                                     type="submit" form="bulkActions" name="bulk_unfavorite_credentials">
                                     <i class="far fa-fw fa-star mr-2"></i>Unfavorite
                                 </button>
+                                <?php if (lookupUserPermission("module_credential") >= 2) { ?>
+                                <div class="dropdown-divider"></div>
+                                <a class="dropdown-item ajax-modal" href="#"
+                                    data-modal-url="modals/credential/credential_bulk_move.php"
+                                    data-bulk="true">
+                                    <i class="fas fa-fw fa-exchange-alt mr-2"></i>Move to Client
+                                </a>
+                                <?php } ?>
                                 <?php if ($archived) { ?>
                                 <div class="dropdown-divider"></div>
                                 <button class="dropdown-item text-info"
