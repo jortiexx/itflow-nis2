@@ -5191,6 +5191,28 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.26'");
     }
 
+    // 2.4.4.26 -> 2.4.4.27: Tactical RMM sync (cron/trmm_sync.php, replaces
+    // the n8n "TRMM -> ITflow" workflow). Clients are linked on the TRMM
+    // client ID, so renaming a client on either side never creates a duplicate.
+    if ($current_db_version == '2.4.4.26') {
+        mysqli_query($mysqli, "ALTER TABLE `settings`
+            ADD COLUMN IF NOT EXISTS `config_trmm_api_url` VARCHAR(255) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS `config_trmm_api_key` VARCHAR(255) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS `config_trmm_web_url` VARCHAR(255) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS `config_trmm_last_sync_at` DATETIME DEFAULT NULL");
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `trmm_client_map` (
+            `trmm_client_id` INT(11) NOT NULL,
+            `trmm_client_name` VARCHAR(255) NOT NULL,
+            `client_id` INT(11) DEFAULT NULL,
+            `trmm_skip` TINYINT(1) NOT NULL DEFAULT 0,
+            `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`trmm_client_id`),
+            KEY `idx_trmm_client` (`client_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.27'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

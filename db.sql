@@ -2617,6 +2617,10 @@ CREATE TABLE `settings` (
   `config_msp_last_sync_wefact_at` datetime DEFAULT NULL,
   `config_msp_last_sync_timeon_at` datetime DEFAULT NULL,
   `config_msp_last_sync_freshdesk_at` datetime DEFAULT NULL,
+  `config_trmm_api_url` varchar(255) DEFAULT NULL,
+  `config_trmm_api_key` varchar(255) DEFAULT NULL,
+  `config_trmm_web_url` varchar(255) DEFAULT NULL,
+  `config_trmm_last_sync_at` datetime DEFAULT NULL,
   PRIMARY KEY (`company_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -3125,6 +3129,25 @@ CREATE TABLE `tickets` (
   `ticket_recurring_ticket_id` int(11) DEFAULT 0,
   `ticket_order` int(11) NOT NULL DEFAULT 0,
   PRIMARY KEY (`ticket_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `trmm_client_map`
+--
+
+DROP TABLE IF EXISTS `trmm_client_map`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `trmm_client_map` (
+  `trmm_client_id` int(11) NOT NULL,
+  `trmm_client_name` varchar(255) NOT NULL,
+  `client_id` int(11) DEFAULT NULL,
+  `trmm_skip` tinyint(1) NOT NULL DEFAULT 0,
+  `created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  PRIMARY KEY (`trmm_client_id`),
+  KEY `idx_trmm_client` (`client_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
