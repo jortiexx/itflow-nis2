@@ -596,6 +596,28 @@ CREATE TABLE `client_tags` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `client_entities`
+--
+
+DROP TABLE IF EXISTS `client_entities`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8mb4 */;
+CREATE TABLE `client_entities` (
+  `entity_id` int(11) NOT NULL AUTO_INCREMENT,
+  `entity_client_id` int(11) NOT NULL,
+  `entity_name` varchar(255) NOT NULL,
+  `entity_kvk` varchar(20) DEFAULT NULL,
+  `entity_vat` varchar(30) DEFAULT NULL,
+  `entity_primary` tinyint(1) NOT NULL DEFAULT 0,
+  `entity_created_at` datetime NOT NULL DEFAULT current_timestamp(),
+  `entity_updated_at` datetime DEFAULT NULL ON UPDATE current_timestamp(),
+  `entity_archived_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`entity_id`),
+  KEY `idx_entity_client` (`entity_client_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `clients`
 --
 

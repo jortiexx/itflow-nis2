@@ -69,6 +69,17 @@ if (isset($_GET['client_id'])) {
         // Tab Title // No Sanitizing needed
         $tab_title = $row['client_name'];
 
+        // Legal entities (B.V.) - primary first
+        $client_entities = array();
+        $sql_client_entities = mysqli_query($mysqli, "SELECT entity_name, entity_kvk, entity_vat FROM client_entities WHERE entity_client_id = $client_id AND entity_archived_at IS NULL ORDER BY entity_primary DESC, entity_name ASC");
+        while ($row_entity = mysqli_fetch_assoc($sql_client_entities)) {
+            $client_entities[] = array(
+                'name' => nullable_htmlentities($row_entity['entity_name']),
+                'kvk' => nullable_htmlentities($row_entity['entity_kvk']),
+                'vat' => nullable_htmlentities($row_entity['entity_vat'])
+            );
+        }
+
         // Client Tags
 
         $client_tag_name_display_array = array();

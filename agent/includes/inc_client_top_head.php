@@ -165,6 +165,21 @@
                     <?php } ?>
                 </span>
             </div>
+            <?php foreach ($client_entities as $client_entity) { ?>
+            <div class="ml-1 mt-1 text-secondary">Entity
+                <span class="text-dark float-right"><?php echo $client_entity['name']; ?></span>
+            </div>
+            <?php if (!empty($client_entity['kvk'])) { ?>
+            <div class="ml-1 mt-1 text-secondary">KvK
+                <span class="text-dark float-right"><?php echo $client_entity['kvk']; ?></span>
+            </div>
+            <?php } ?>
+            <?php if (!empty($client_entity['vat'])) { ?>
+            <div class="ml-1 mt-1 text-secondary">VAT
+                <span class="text-dark float-right"><?php echo $client_entity['vat']; ?></span>
+            </div>
+            <?php } ?>
+            <?php } ?>
             <?php if(!empty($client_tax_id_number)) { ?>
             <div class="ml-1 mt-1 text-secondary">Tax ID
                 <span class="text-dark float-right"><?php echo $client_tax_id_number; ?></span>

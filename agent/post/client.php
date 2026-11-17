@@ -59,7 +59,7 @@ if (isset($_POST['add_client'])) {
     );
     mysqli_stmt_bind_param(
         $query,
-        "ssssdsiisss",
+        "ssssdsisiss",
         $name,
         $type,
         $website,
@@ -74,6 +74,22 @@ if (isset($_POST['add_client'])) {
     );
     mysqli_stmt_execute($query);
     $client_id = mysqli_insert_id($mysqli);
+
+    // Primary legal entity; by default the entity carries the client name
+    if (empty($entity_name)) {
+        $entity_name = $name;
+    }
+    $query = mysqli_prepare(
+        $mysqli,
+        "INSERT INTO client_entities SET
+        entity_client_id = ?,
+        entity_name = ?,
+        entity_kvk = ?,
+        entity_vat = ?,
+        entity_primary = 1"
+    );
+    mysqli_stmt_bind_param($query, "isss", $client_id, $entity_name, $entity_kvk, $entity_vat);
+    mysqli_stmt_execute($query);
 
     // Create client folder
     $client_folder = $_SERVER['DOCUMENT_ROOT'] . "/uploads/clients/$client_id";
@@ -280,7 +296,7 @@ if (isset($_POST['edit_client'])) {
     );
     mysqli_stmt_bind_param(
         $query,
-        "ssssdisiisi",
+        "ssssdisissi",
         $name,
         $type,
         $website,
@@ -294,6 +310,22 @@ if (isset($_POST['edit_client'])) {
         $client_id
     );
     mysqli_stmt_execute($query);
+
+    // Primary legal entity: update it, create it, or remove it when cleared
+    $sql_primary_entity = mysqli_query($mysqli, "SELECT entity_id FROM client_entities WHERE entity_client_id = $client_id AND entity_primary = 1 AND entity_archived_at IS NULL LIMIT 1");
+    $primary_entity_id = intval(mysqli_fetch_assoc($sql_primary_entity)['entity_id'] ?? 0);
+    if (!empty($entity_name)) {
+        if ($primary_entity_id) {
+            $query = mysqli_prepare($mysqli, "UPDATE client_entities SET entity_name = ?, entity_kvk = ?, entity_vat = ? WHERE entity_id = ?");
+            mysqli_stmt_bind_param($query, "sssi", $entity_name, $entity_kvk, $entity_vat, $primary_entity_id);
+        } else {
+            $query = mysqli_prepare($mysqli, "INSERT INTO client_entities SET entity_client_id = ?, entity_name = ?, entity_kvk = ?, entity_vat = ?, entity_primary = 1");
+            mysqli_stmt_bind_param($query, "isss", $client_id, $entity_name, $entity_kvk, $entity_vat);
+        }
+        mysqli_stmt_execute($query);
+    } elseif ($primary_entity_id) {
+        mysqli_query($mysqli, "DELETE FROM client_entities WHERE entity_id = $primary_entity_id");
+    }
 
     // Create referral category if it doesn't exist
     $query = mysqli_prepare($mysqli, "SELECT category_name FROM categories WHERE category_type = 'Referral' AND category_archived_at IS NULL AND category_name = ?");
@@ -396,6 +428,7 @@ if (isset($_GET['delete_client'])) {
     // Delete Client Data
     mysqli_query($mysqli, "DELETE FROM api_keys WHERE api_key_client_id = $client_id");
     mysqli_query($mysqli, "DELETE FROM certificates WHERE certificate_client_id = $client_id");
+    mysqli_query($mysqli, "DELETE FROM client_entities WHERE entity_client_id = $client_id");
     mysqli_query($mysqli, "DELETE FROM documents WHERE document_client_id = $client_id");
 
     // Delete Contacts

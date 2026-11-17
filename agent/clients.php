@@ -53,7 +53,9 @@ if (isset($_GET['referral']) & !empty($_GET['referral'])) {
 $sql = mysqli_query(
     $mysqli,
     "
-    SELECT SQL_CALC_FOUND_ROWS clients.*, contacts.*, locations.*, GROUP_CONCAT(tag_name)
+    SELECT SQL_CALC_FOUND_ROWS clients.*, contacts.*, locations.*, GROUP_CONCAT(tag_name),
+        (SELECT GROUP_CONCAT(entity_name ORDER BY entity_primary DESC, entity_name ASC SEPARATOR ', ')
+         FROM client_entities WHERE entity_client_id = clients.client_id AND entity_archived_at IS NULL) AS client_entity_names
     FROM clients
     LEFT JOIN contacts ON clients.client_id = contacts.contact_client_id AND contact_primary = 1
     LEFT JOIN locations ON clients.client_id = locations.location_client_id AND location_primary = 1
@@ -63,7 +65,9 @@ $sql = mysqli_query(
            OR contact_email LIKE '%$q%' OR contact_name LIKE '%$q%' OR contact_phone LIKE '%$phone_query%'
            OR contact_mobile LIKE '%$phone_query%' OR location_address LIKE '%$q%'
            OR location_city LIKE '%$q%' OR location_state LIKE '%$q%' OR location_zip LIKE '%$q%' OR location_country LIKE '%$q%'
-           OR tag_name LIKE '%$q%' OR client_tax_id_number LIKE '%$q%')
+           OR tag_name LIKE '%$q%' OR client_tax_id_number LIKE '%$q%'
+           OR EXISTS (SELECT 1 FROM client_entities WHERE entity_client_id = clients.client_id AND entity_archived_at IS NULL
+                      AND (entity_name LIKE '%$q%' OR entity_kvk LIKE '%$q%' OR entity_vat LIKE '%$q%')))
       AND client_$archive_query
       AND DATE(client_created_at) BETWEEN '$dtf' AND '$dtt'
       $leads_query
@@ -332,6 +336,7 @@ $num_rows = mysqli_fetch_row(mysqli_query($mysqli, "SELECT FOUND_ROWS()"));
                 while ($row = mysqli_fetch_assoc($sql)) {
                     $client_id = intval($row['client_id']);
                     $client_name = nullable_htmlentities($row['client_name']);
+                    $client_entity_names = nullable_htmlentities($row['client_entity_names']);
                     $client_type = nullable_htmlentities($row['client_type']);
                     $location_id = intval($row['location_id']);
                     $location_country = nullable_htmlentities($row['location_country']);
@@ -511,6 +516,9 @@ $num_rows = mysqli_fetch_row(mysqli_query($mysqli, "SELECT FOUND_ROWS()"));
                                     <i class="fas fa-fw fa-2x fa-user text-dark mr-2"></i>
                                     <div class="media-body">
                                         <div class="text-bold"><?= $client_name ?></div>
+                                        <?php if (!empty($client_entity_names)) { ?>
+                                        <div class="small text-secondary" title="Entity"><i class="fa fa-fw fa-landmark mr-1"></i><?= $client_entity_names ?></div>
+                                        <?php } ?>
                                         <div class="text-secondary"><?= $client_type ?></div>
 
                                     </div>

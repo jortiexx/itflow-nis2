@@ -5161,6 +5161,29 @@ while ($migration_iterations < $migration_max_iterations
         mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.24'");
     }
 
+    // 2.4.4.24 -> 2.4.4.25: legal entities per client.
+    //
+    // client_name stays the trading name ("Octavium B.V."); the legal
+    // entity that gets invoiced lives in its own table so a client can
+    // carry more than one B.V. later on. entity_primary marks the one that
+    // the client add/edit modal reads and writes.
+    if ($current_db_version == '2.4.4.24') {
+        mysqli_query($mysqli, "CREATE TABLE IF NOT EXISTS `client_entities` (
+            `entity_id` INT(11) NOT NULL AUTO_INCREMENT,
+            `entity_client_id` INT(11) NOT NULL,
+            `entity_name` VARCHAR(255) NOT NULL,
+            `entity_kvk` VARCHAR(20) DEFAULT NULL,
+            `entity_vat` VARCHAR(30) DEFAULT NULL,
+            `entity_primary` TINYINT(1) NOT NULL DEFAULT 0,
+            `entity_created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `entity_updated_at` DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            `entity_archived_at` DATETIME NULL DEFAULT NULL,
+            PRIMARY KEY (`entity_id`),
+            KEY `idx_entity_client` (`entity_client_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+        mysqli_query($mysqli, "UPDATE `settings` SET `config_current_database_version` = '2.4.4.25'");
+    }
+
     // Refresh the local version pointer from the DB so the next pass of
     // the while-loop picks up wherever the just-completed step left off.
     // If no step matched (so nothing changed), break to avoid an infinite

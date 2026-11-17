@@ -79,6 +79,37 @@ ob_start();
                 </div>
 
                 <div class="form-group">
+                    <label>Entity <small class="text-secondary">(legal entity / B.V. that is invoiced)</small></label>
+                    <div class="input-group">
+                        <div class="input-group-prepend">
+                            <span class="input-group-text"><i class="fa fa-fw fa-landmark"></i></span>
+                        </div>
+                        <input type="text" class="form-control" name="entity_name" placeholder="Leave empty to use the client name" maxlength="255">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group col-md-6">
+                        <label>KvK</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text"><i class="fa fa-fw fa-file-contract"></i></span>
+                            </div>
+                            <input type="text" class="form-control" name="entity_kvk" placeholder="Chamber of Commerce no." maxlength="20">
+                        </div>
+                    </div>
+                    <div class="form-group col-md-6">
+                        <label>VAT (BTW)</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text"><i class="fa fa-fw fa-receipt"></i></span>
+                            </div>
+                            <input type="text" class="form-control" name="entity_vat" placeholder="NL000000000B01" maxlength="30">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label>Shortened Name</label>
                     <div class="input-group">
                         <div class="input-group-prepend">

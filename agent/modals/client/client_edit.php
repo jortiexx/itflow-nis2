@@ -20,6 +20,13 @@ $client_notes = nullable_htmlentities($row['client_notes']);
 $client_created_at = nullable_htmlentities($row['client_created_at']);
 $client_archived_at = nullable_htmlentities($row['client_archived_at']);
 
+// Primary legal entity
+$sql_primary_entity = mysqli_query($mysqli, "SELECT * FROM client_entities WHERE entity_client_id = $client_id AND entity_primary = 1 AND entity_archived_at IS NULL LIMIT 1");
+$row_entity = mysqli_fetch_assoc($sql_primary_entity) ?: [];
+$entity_name = nullable_htmlentities($row_entity['entity_name'] ?? '');
+$entity_kvk = nullable_htmlentities($row_entity['entity_kvk'] ?? '');
+$entity_vat = nullable_htmlentities($row_entity['entity_vat'] ?? '');
+
 // Client Tags
 $client_tag_id_array = array();
 $sql_client_tags = mysqli_query($mysqli, "SELECT tag_id FROM client_tags WHERE client_id = $client_id");
@@ -86,6 +93,40 @@ ob_start();
                             <div class="input-group-text">
                                 <input type="checkbox" name="lead" value="1" <?php if($client_is_lead == 1){ echo "checked"; } ?>>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Entity <small class="text-secondary">(legal entity / B.V. that is invoiced)</small></label>
+                    <div class="input-group">
+                        <div class="input-group-prepend">
+                            <span class="input-group-text"><i class="fa fa-fw fa-landmark"></i></span>
+                        </div>
+                        <input type="text" class="form-control" name="entity_name" placeholder="Legal entity, e.g. SV30 B.V." maxlength="255"
+                               value="<?php echo $entity_name; ?>">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group col-md-6">
+                        <label>KvK</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text"><i class="fa fa-fw fa-file-contract"></i></span>
+                            </div>
+                            <input type="text" class="form-control" name="entity_kvk" placeholder="Chamber of Commerce no." maxlength="20"
+                                   value="<?php echo $entity_kvk; ?>">
+                        </div>
+                    </div>
+                    <div class="form-group col-md-6">
+                        <label>VAT (BTW)</label>
+                        <div class="input-group">
+                            <div class="input-group-prepend">
+                                <span class="input-group-text"><i class="fa fa-fw fa-receipt"></i></span>
+                            </div>
+                            <input type="text" class="form-control" name="entity_vat" placeholder="NL000000000B01" maxlength="30"
+                                   value="<?php echo $entity_vat; ?>">
                         </div>
                     </div>
                 </div>
