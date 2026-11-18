@@ -3225,3 +3225,103 @@ function formatDuration($time) {
 
     return implode(' ', $parts);
 }
+
+/*
+ * Location opening hours (locations.location_hours)
+ *
+ * Stored format (also read by external update agents, keep in sync):
+ *   ""                                   -> not set, default applies (ma-vr 08:00-18:00)
+ *   "ma-vr 08:00-18:00; za 10:00-03:00; zo dicht"
+ * - Segments separated by ";" (canonical "; "), each "<days> <spec>".
+ * - <days>: one day or an ascending range "ma-vr". Days: ma di wo do vr za zo (Monday first).
+ * - <spec>: "HH:MM-HH:MM" (24h), "dicht" (closed) or "24u" (open the whole day).
+ *   If the closing time is <= the opening time it is on the next day (za 10:00-03:00 = until Sunday 03:00).
+ * - Every day appears exactly once. Lowercase, no other text.
+ */
+function locationHoursDays(): array {
+    return ['ma', 'di', 'wo', 'do', 'vr', 'za', 'zo'];
+}
+
+// Returns [] for empty, null if invalid, otherwise 7 entries: null (closed) or ['from' => 'HH:MM', 'to' => 'HH:MM'] ('00:00'-'00:00' = whole day)
+function parseLocationHours(?string $value): ?array {
+    $value = trim((string) $value);
+    if ($value === '') {
+        return [];
+    }
+
+    $days = locationHoursDays();
+    $result = array_fill(0, 7, false);
+    $time = '(?:[01]\d|2[0-3]):[0-5]\d';
+
+    foreach (explode(';', $value) as $segment) {
+        $segment = strtolower(trim($segment));
+        if (!preg_match('/^(ma|di|wo|do|vr|za|zo)(?:\s*-\s*(ma|di|wo|do|vr|za|zo))?\s+(dicht|24u|(' . $time . ')\s*-\s*(' . $time . '))$/', $segment, $m)) {
+            return null;
+        }
+        $start = array_search($m[1], $days);
+        $end = !empty($m[2]) ? array_search($m[2], $days) : $start;
+        if ($end < $start) {
+            return null;
+        }
+        if ($m[3] === 'dicht') {
+            $spec = null;
+        } elseif ($m[3] === '24u') {
+            $spec = ['from' => '00:00', 'to' => '00:00'];
+        } else {
+            if ($m[4] === $m[5] && $m[4] !== '00:00') {
+                return null;
+            }
+            $spec = ['from' => $m[4], 'to' => $m[5]];
+        }
+        for ($i = $start; $i <= $end; $i++) {
+            if ($result[$i] !== false) {
+                return null; // day listed twice
+            }
+            $result[$i] = $spec;
+        }
+    }
+
+    if (in_array(false, $result, true)) {
+        return null; // a day is missing
+    }
+
+    return $result;
+}
+
+// Builds the canonical string from 7 entries (see parseLocationHours); consecutive equal days are merged
+function formatLocationHours(array $week): string {
+    if (empty($week)) {
+        return '';
+    }
+
+    $days = locationHoursDays();
+    $spec = function ($d) {
+        if ($d === null) {
+            return 'dicht';
+        }
+        if ($d['from'] === '00:00' && $d['to'] === '00:00') {
+            return '24u';
+        }
+        return $d['from'] . '-' . $d['to'];
+    };
+
+    $segments = [];
+    $i = 0;
+    while ($i < 7) {
+        $s = $spec($week[$i] ?? null);
+        $j = $i;
+        while ($j + 1 < 7 && $spec($week[$j + 1] ?? null) === $s) {
+            $j++;
+        }
+        $segments[] = ($i === $j ? $days[$i] : $days[$i] . '-' . $days[$j]) . ' ' . $s;
+        $i = $j + 1;
+    }
+
+    return implode('; ', $segments);
+}
+
+// Canonical form of a stored/posted value, or null if it is not in the format
+function normalizeLocationHours(?string $value): ?string {
+    $week = parseLocationHours($value);
+    return $week === null ? null : formatLocationHours($week);
+}

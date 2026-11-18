@@ -236,15 +236,7 @@ ob_start();
                     </div>
                 </div>
 
-                <div class="form-group">
-                    <label>Hours</label>
-                    <div class="input-group">
-                        <div class="input-group-prepend">
-                            <span class="input-group-text"><i class="fa fa-fw fa-clock"></i></span>
-                        </div>
-                        <input type="text" class="form-control" name="hours" placeholder="Hours of operation" maxlength="200" value="<?php echo $location_hours; ?>">
-                    </div>
-                </div>
+                <?php $location_hours_raw = $row['location_hours'] ?? ''; require __DIR__ . '/location_hours_fields.php'; ?>
 
             </div>
 

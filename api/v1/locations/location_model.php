@@ -59,7 +59,13 @@ if (isset($_POST['location_zip'])) {
 }
 
 if (isset($_POST['location_hours'])) {
-    $hours = sanitizeInput($_POST['location_hours']);
+    // Must be in the stored opening-hours format (see parseLocationHours in functions.php), or empty
+    $hours = normalizeLocationHours((string) $_POST['location_hours']);
+    if ($hours === null) {
+        echo json_encode(['success' => 'False', 'message' => "location_hours not in the expected format, e.g. 'ma-vr 08:00-18:00; za 10:00-03:00; zo dicht' (empty = default)"]);
+        exit();
+    }
+    $hours = mysqli_real_escape_string($mysqli, $hours);
 } elseif ($location_row) {
     $hours = mysqli_real_escape_string($mysqli, $location_row['location_hours']);
 } else {

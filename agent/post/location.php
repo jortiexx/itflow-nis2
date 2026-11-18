@@ -519,8 +519,10 @@ if (isset($_POST["import_locations_csv"])) {
             if(isset($column[6])){
                 $phone = preg_replace("/[^0-9]/", '',$column[6]);
             }
+            // Opening hours: only accepted in the stored format, anything else is left empty (= default)
+            $hours = '';
             if(isset($column[7])){
-                $hours = sanitizeInput($column[7]);
+                $hours = mysqli_real_escape_string($mysqli, normalizeLocationHours($column[7]) ?? '');
             }
 
             // Check if duplicate was detected
